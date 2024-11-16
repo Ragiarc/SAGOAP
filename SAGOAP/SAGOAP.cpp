@@ -3,8 +3,10 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <typeindex>
 #include <unordered_map>
 #include <typeinfo>
+#include <unordered_set>
 
 class StateComponent {
 public:
@@ -26,6 +28,7 @@ public:
     virtual void AddValues(std::unique_ptr<StateComponent> otherComponent) const = 0;
     virtual void SubtractValues(std::unique_ptr<StateComponent> otherComponent) const = 0;
     virtual std::unique_ptr<StateComponent> Clone() const = 0;
+    virtual bool IsEmpty() const = 0;
 
 private:
     std::unordered_map<std::string, std::any> properties;
@@ -68,52 +71,66 @@ private:
     }
 };
 
-namespace GoalUtils {
+namespace StateComponentUtils {
 
-    std::vector<std::unique_ptr<StateComponent>> ApplyResults(
-        const std::vector<std::unique_ptr<StateComponent>>& goal,
-        const std::vector<std::unique_ptr<StateComponent>>& results) 
+    std::vector<std::unique_ptr<StateComponent>> CombineComponents(
+    const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
+    const std::vector<std::unique_ptr<StateComponent>>& addComponents) 
     {
+        // Create a copy of the goal to work with
         std::vector<std::unique_ptr<StateComponent>> updatedGoal;
 
-        for (const auto& resultComponent : results) {
-            bool toAdd = true;
-            for (const auto& goalComponent : goal) {
-                if (typeid(goalComponent) == typeid(resultComponent)) {
-                    goalComponent->AddValues(resultComponent->Clone());
-                    toAdd = false;
+        // Track which goal components have been updated by results
+        std::unordered_set<std::type_index> updatedTypes;
+
+        // Apply results to the goal
+        for (const auto& baseComponent : baseComponents) {
+            std::unique_ptr<StateComponent> combinedComponent = baseComponent->Clone();
+            for (const auto& addComponent : addComponents) {
+                if (typeid(*combinedComponent) == typeid(*addComponent)) {
+                    combinedComponent->AddValues(addComponent->Clone());
+                    updatedTypes.insert(typeid(*baseComponent));
                     break;
                 }
             }
-            if (toAdd) {
-                updatedGoal.push_back(resultComponent->Clone()); 
-            }
+            updatedGoal.push_back(std::move(combinedComponent));
         }
 
-        for (const auto& goalComponent : goal) {
-            updatedGoal.push_back(goalComponent->Clone());
+        // Add remaining results that didn't match any goal components
+        for (const auto& resultComponent : addComponents) {
+            if (!updatedTypes.contains(typeid(resultComponent))) {
+                updatedGoal.push_back(resultComponent->Clone());
+            }
         }
 
         return updatedGoal;
     }
 
-    std::vector<std::unique_ptr<StateComponent>> ApplyRequirements(
-        const std::vector<std::unique_ptr<StateComponent>>& goal,
-        const std::vector<std::unique_ptr<StateComponent>>& requirements) 
+    std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
+    const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
+    const std::vector<std::unique_ptr<StateComponent>>& componentsToRemove)
     {
-        std::vector<std::unique_ptr<StateComponent>> updatedGoal;
+        std::vector<std::unique_ptr<StateComponent>> updatedComponents;
 
-        // Copy the current goal components
-        for (const auto& goalComponent : goal) {
-            updatedGoal.push_back(goalComponent->Clone());
+        for (const auto& baseComponent : baseComponents) {
+            bool toRemove = false;
+            for (const auto& removeComponent : componentsToRemove) {
+                if (typeid(baseComponent) == typeid(removeComponent)) {
+                    auto clonedBase = baseComponent->Clone();
+                    clonedBase->SubtractValues(removeComponent->Clone());
+                    if (!clonedBase->IsEmpty()) { // Assuming `IsEmpty` checks if the component is effectively null
+                        updatedComponents.push_back(std::move(clonedBase));
+                    }
+                    toRemove = true;
+                    break;
+                }
+            }
+            if (!toRemove) {
+                updatedComponents.push_back(baseComponent->Clone());
+            }
         }
 
-        // Add each requirement to the goal
-        for (const auto& requirement : requirements) {
-            updatedGoal.push_back(requirement->Clone()); // Cloning keeps pure function property
-        }
-
-        return updatedGoal;
+        return updatedComponents;
     }
 
 } // namespace GoalUtils
