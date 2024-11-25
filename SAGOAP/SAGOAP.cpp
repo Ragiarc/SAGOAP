@@ -1,6 +1,7 @@
 #include <vector>
 #include <any>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <typeindex>
@@ -11,27 +12,12 @@
 class StateComponent {
 public:
     virtual ~StateComponent() = default;
-    // Add or update a property of any type
-    void SetProperty(const std::string& key, std::any value) {
-        properties[key] = std::move(value);
-    }
-
-    // Retrieve a property by key with type checking
-    template <typename T>
-    T GetProperty(const std::string& key) const {
-        if (auto it = properties.find(key); it != properties.end()) {
-            return std::any_cast<T>(it->second);
-        }
-        throw std::runtime_error("Property not found or type mismatch");
-    }
-
-    virtual void AddValues(std::unique_ptr<StateComponent> otherComponent) const = 0;
-    virtual void SubtractValues(std::unique_ptr<StateComponent> otherComponent) const = 0;
+    
+    virtual void AddValues(const StateComponent& otherComponent) = 0;
+    //virtual void SubtractValues(std::unique_ptr<StateComponent> otherComponent) const = 0;
     virtual std::unique_ptr<StateComponent> Clone() const = 0;
     virtual bool IsEmpty() const = 0;
-
-private:
-    std::unordered_map<std::string, std::any> properties;
+    
 };
 
 class BaseAction {
@@ -73,40 +59,38 @@ private:
 
 namespace StateComponentUtils {
 
-    std::vector<std::unique_ptr<StateComponent>> CombineComponents(
+    std::vector<std::unique_ptr<StateComponent>> CombineComponentLists(
     const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
     const std::vector<std::unique_ptr<StateComponent>>& addComponents) 
     {
-        // Create a copy of the goal to work with
-        std::vector<std::unique_ptr<StateComponent>> updatedGoal;
+        std::vector<std::unique_ptr<StateComponent>> combinedComponents;
+        std::map<const char*, std::unique_ptr<StateComponent>> componentTypeToUpdatedValue;
 
-        // Track which goal components have been updated by results
-        std::unordered_set<std::type_index> updatedTypes;
-
-        // Apply results to the goal
         for (const auto& baseComponent : baseComponents) {
             std::unique_ptr<StateComponent> combinedComponent = baseComponent->Clone();
+            auto baseComponentType = typeid(combinedComponent).name();
             for (const auto& addComponent : addComponents) {
-                if (typeid(*combinedComponent) == typeid(*addComponent)) {
-                    combinedComponent->AddValues(addComponent->Clone());
-                    updatedTypes.insert(typeid(*baseComponent));
+                auto addComponentType = typeid(addComponent).name();
+                
+                if (baseComponentType == typeid(addComponent).name()) {
+                    combinedComponent->AddValues(*addComponent.get());
+                    componentTypeToUpdatedValue[baseComponentType] =  std::move(combinedComponent);
                     break;
+                } else
+                {
+                    //auto addComponentClone = addComponent->Clone();
+                    //componentTypeToUpdatedValue[addComponentType] = std::move(addComponent);
                 }
             }
-            updatedGoal.push_back(std::move(combinedComponent));
         }
 
-        // Add remaining results that didn't match any goal components
-        for (const auto& resultComponent : addComponents) {
-            if (!updatedTypes.contains(typeid(resultComponent))) {
-                updatedGoal.push_back(resultComponent->Clone());
-            }
+        for(auto it = componentTypeToUpdatedValue.begin(); it != componentTypeToUpdatedValue.end(); ++it ) {
+            combinedComponents.push_back( std::move(it->second) );
         }
-
-        return updatedGoal;
+        return combinedComponents;
     }
 
-    std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
+    /*std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
     const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
     const std::vector<std::unique_ptr<StateComponent>>& componentsToRemove)
     {
@@ -131,7 +115,7 @@ namespace StateComponentUtils {
         }
 
         return updatedComponents;
-    }
+    }*/
 
 } // namespace GoalUtils
 
