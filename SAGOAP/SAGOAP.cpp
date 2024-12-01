@@ -14,7 +14,7 @@ public:
     virtual ~StateComponent() = default;
     
     virtual void AddValues(const StateComponent& otherComponent) = 0;
-    //virtual void SubtractValues(std::unique_ptr<StateComponent> otherComponent) const = 0;
+    virtual void SubtractValues(const StateComponent& otherComponent) = 0;
     virtual std::unique_ptr<StateComponent> Clone() const = 0;
     virtual bool IsEmpty() const = 0;
     
@@ -68,18 +68,23 @@ namespace StateComponentUtils {
 
         for (const auto& baseComponent : baseComponents) {
             std::unique_ptr<StateComponent> combinedComponent = baseComponent->Clone();
-            auto baseComponentType = typeid(combinedComponent).name();
+            auto baseComponentType = typeid(*combinedComponent).name();
+
+            componentTypeToUpdatedValue[baseComponentType] = std::move(combinedComponent);
+            
             for (const auto& addComponent : addComponents) {
-                auto addComponentType = typeid(addComponent).name();
+                auto addComponentType = typeid(*addComponent).name();
                 
-                if (baseComponentType == typeid(addComponent).name()) {
-                    combinedComponent->AddValues(*addComponent.get());
-                    componentTypeToUpdatedValue[baseComponentType] =  std::move(combinedComponent);
+                if (baseComponentType == typeid(*addComponent).name()) {
+                    auto baseComp = std::move(componentTypeToUpdatedValue[baseComponentType]);
+                    baseComp->AddValues(*addComponent);
+                    componentTypeToUpdatedValue[baseComponentType] = std::move(baseComp);
                     break;
                 } else
                 {
-                    //auto addComponentClone = addComponent->Clone();
-                    //componentTypeToUpdatedValue[addComponentType] = std::move(addComponent);
+                    auto addComponentClone = addComponent->Clone();
+                    if (componentTypeToUpdatedValue.contains(addComponentType)) { addComponentClone->AddValues(*componentTypeToUpdatedValue[addComponentType].get());}
+                    componentTypeToUpdatedValue[addComponentType] = std::move(addComponentClone);
                 }
             }
         }
@@ -90,18 +95,18 @@ namespace StateComponentUtils {
         return combinedComponents;
     }
 
-    /*std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
+    std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
     const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
     const std::vector<std::unique_ptr<StateComponent>>& componentsToRemove)
     {
         std::vector<std::unique_ptr<StateComponent>> updatedComponents;
-
+        
         for (const auto& baseComponent : baseComponents) {
             bool toRemove = false;
             for (const auto& removeComponent : componentsToRemove) {
-                if (typeid(baseComponent) == typeid(removeComponent)) {
+                if (typeid(*baseComponent).name() == typeid(*removeComponent).name()) {
                     auto clonedBase = baseComponent->Clone();
-                    clonedBase->SubtractValues(removeComponent->Clone());
+                    clonedBase->SubtractValues(*removeComponent);
                     if (!clonedBase->IsEmpty()) { // Assuming `IsEmpty` checks if the component is effectively null
                         updatedComponents.push_back(std::move(clonedBase));
                     }
@@ -115,7 +120,7 @@ namespace StateComponentUtils {
         }
 
         return updatedComponents;
-    }*/
+    }
 
 } // namespace GoalUtils
 
