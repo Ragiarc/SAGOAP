@@ -73,44 +73,47 @@ public:
 // test actions
 class HealAction : public BaseAction {
 public:
-  bool IsRelevant(const StateComponent& goal) const override {
+  bool IsRelevant(const std::unique_ptr<StateComponent>& goal) const override {
     // Relevant if the goal is to have more health
-    const auto* healthGoal = dynamic_cast<const HealthStateComponent*>(&goal);
+    const auto* healthGoal = dynamic_cast<const HealthStateComponent*>(goal.get());
     return healthGoal != nullptr;
   }
 
-  std::vector<StateComponent> GenerateRequirements(const StateComponent& goal) override {
+  std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(const std::unique_ptr<StateComponent>& goal) override {
     // Requires 10 mana
-    std::vector<StateComponent> requirements;
-    requirements.push_back(ManaStateComponent(10));
+    std::vector<std::unique_ptr<StateComponent>> requirements;
+    auto manaRequirement = new ManaStateComponent(10);
+    requirements.push_back(std::move(manaRequirement->Clone()));
     return requirements;
   }
 
-  std::vector<StateComponent> GenerateResults(const StateComponent& goal) override {
+  std::vector<std::unique_ptr<StateComponent>> GenerateResults(const std::unique_ptr<StateComponent>& goal) override {
     // Heals 15 health
-    std::vector<StateComponent> results;
-    results.push_back(HealthStateComponent(15));
+    std::vector<std::unique_ptr<StateComponent>> results;
+    auto healthResult = new HealthStateComponent(15);
+    results.push_back(std::move(healthResult->Clone()));
     return results;
   }
 };
 
 class ManaBoostAction : public BaseAction {
 public:
-  bool IsRelevant(const StateComponent& goal) const override {
+  bool IsRelevant(const std::unique_ptr<StateComponent>& goal) const override {
     // Relevant if the goal is to have more mana
-    const auto* manaGoal = dynamic_cast<const ManaStateComponent*>(&goal);
+    const auto* manaGoal = dynamic_cast<const ManaStateComponent*>(goal.get());
     return manaGoal != nullptr;
   }
 
-  std::vector<StateComponent> GenerateRequirements(const StateComponent& goal) override {
+  std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(const std::unique_ptr<StateComponent>& goal) override {
     // No requirements
     return {};
   }
 
-  std::vector<StateComponent> GenerateResults(const StateComponent& goal) override {
+  std::vector<std::unique_ptr<StateComponent>> GenerateResults(const std::unique_ptr<StateComponent>& goal) override {
     // Boosts 20 mana
-    std::vector<StateComponent> results;
-    results.push_back(ManaStateComponent(20));
+    std::vector<std::unique_ptr<StateComponent>> results;
+    auto manaResult = new ManaStateComponent(15);
+    results.push_back(std::move(manaResult->Clone()));
     return results;
   }
 };
@@ -200,7 +203,7 @@ TEST(ActionGeneratorTest, GeneratesRelevantActions) {
     ActionGenerator<HealAction, ManaBoostAction> generator;
 
     // Generate actions
-    auto actions = generator.GenerateActions(healthGoal);
+    auto actions = generator.GenerateActions(healthGoal.Clone());
 
     // We expect only the HealAction to be generated (ManaBoost is not relevant)
     ASSERT_EQ(actions.size(), 1);
@@ -212,26 +215,24 @@ TEST(ActionGeneratorTest, GeneratedActionHasCorrectRequirementsAndResults) {
     HealthStateComponent healthGoal(30);
     ActionGenerator<HealAction> generator;
 
-    auto actions = generator.GenerateActions(healthGoal);
+    auto actions = generator.GenerateActions(healthGoal.Clone());
     ASSERT_EQ(actions.size(), 1);
 
     HealAction* healAction = dynamic_cast<HealAction*>(actions[0].get());
     ASSERT_NE(healAction, nullptr);
 
-    // Verify requirements (using the stored map)
-    auto requirementsIt = healAction->requirementsToResultsMap.begin();
-    ASSERT_NE(requirementsIt, healAction->requirementsToResultsMap.end());
+    // Verify requirements
 
-    const auto& requirements = requirementsIt->first;
+    const auto& requirements = healAction->requirements;
     ASSERT_EQ(requirements.size(), 1);
-    const auto* manaRequirement = dynamic_cast<const ManaStateComponent*>(&requirements[0]);
+    const auto* manaRequirement = dynamic_cast<ManaStateComponent*>(requirements[0].get());
     ASSERT_NE(manaRequirement, nullptr);
     EXPECT_EQ(manaRequirement->value, 10);
 
     // Verify results
-    const auto& results = requirementsIt->second;
+    const auto& results = healAction->results;
     ASSERT_EQ(results.size(), 1);
-    const auto* healthResult = dynamic_cast<const HealthStateComponent*>(&results[0]);
+    const auto* healthResult = dynamic_cast<HealthStateComponent*>(results[0].get());
     ASSERT_NE(healthResult, nullptr);
     EXPECT_EQ(healthResult->value, 15);
 }

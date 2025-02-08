@@ -25,17 +25,24 @@ public:
 
 class BaseAction {
 public:
-    virtual bool IsRelevant(const StateComponent& goal) const = 0;
-    virtual std::vector<StateComponent> GenerateRequirements(const StateComponent& goal) = 0;
-    virtual std::vector<StateComponent> GenerateResults(const StateComponent& goal) = 0;
-    std::unordered_map<std::vector<StateComponent>, std::vector<StateComponent>> requirementsToResultsMap;
     virtual ~BaseAction() = default;
+    
+    std::vector<std::unique_ptr<StateComponent>> requirements;
+    std::vector<std::unique_ptr<StateComponent>> results;
+    
+    virtual bool IsRelevant(const std::unique_ptr<StateComponent>& goal) const = 0;
+    virtual std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(const std::unique_ptr<StateComponent>& goal) = 0;
+    virtual std::vector<std::unique_ptr<StateComponent>> GenerateResults(const std::unique_ptr<StateComponent>& goal) = 0;
+    void Configure(const std::unique_ptr<StateComponent>& goal) {
+        requirements = GenerateRequirements(goal);
+        results = GenerateResults(goal);
+    }
 };
 
 template <typename... ActionTypes>
 class ActionGenerator {
 public:
-    std::vector<std::unique_ptr<BaseAction>> GenerateActions(const StateComponent& goal) {
+    std::vector<std::unique_ptr<BaseAction>> GenerateActions(const std::unique_ptr<StateComponent>& goal) {
         std::vector<std::unique_ptr<BaseAction>> actions;
 
         // For each action type, instantiate and add if relevant
@@ -46,15 +53,12 @@ public:
 
 private:
     template <typename ActionType>
-    void CreateActionIfRelevant(const StateComponent& goal, 
+    void CreateActionIfRelevant(const std::unique_ptr<StateComponent>& goal, 
                                 std::vector<std::unique_ptr<BaseAction>>& actions) {
         std::unique_ptr<ActionType> action = std::make_unique<ActionType>();
         
         if (action->IsRelevant(goal)) {
-            std::vector<StateComponent> requirements = action->GenerateRequirements(goal); 
-            std::vector<StateComponent> results = action->GenerateResults(goal);
-
-            action->requirementsToResultsMap[requirements] = results;
+            action->Configure(goal); // Populate requirements and results
             actions.push_back(std::move(action)); // Add configured action to list
         }
     }
@@ -125,34 +129,6 @@ namespace StateComponentUtils {
     }
 
 } // namespace GoalUtils
-
-#ifndef SAGOAP_HASH_SPECIALIZATIONS
-#define SAGOAP_HASH_SPECIALIZATIONS
-namespace std {
-    template <>
-    struct hash<std::vector<std::unique_ptr<StateComponent>>> {
-        size_t operator()(const std::vector<std::unique_ptr<StateComponent>>& vec) const noexcept {
-            size_t seed = 0;
-            for (const auto& component : vec) {
-                seed ^= component->GetHash() + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            }
-            return seed;
-        }
-    };
-
-    template <>
-    struct hash<std::vector<StateComponent>> {
-        size_t operator()(const std::vector<StateComponent>& vec) const noexcept
-        {
-            size_t seed = 0;
-            for (const auto& component : vec) {
-                seed ^= component.GetHash() + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            }
-            return seed;
-        }
-    };
-}
-#endif // SAGOAP_HASH_SPECIALIZATIONS
 
 class GoapPlanner {
 private:
