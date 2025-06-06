@@ -1,172 +1,152 @@
+#include "SAGOAP.h"
 #include <vector>
 #include <any>
-#include <functional>
+
 #include <iostream>
 #include <map>
-#include <stdexcept>
-#include <string>
+
 #include <typeindex>
-#include <unordered_map>
 #include <typeinfo>
-#include <unordered_set>
 
 
 
-class StateComponent {
-public:
-    virtual ~StateComponent() = default;
-    
-    virtual void AddValues(const StateComponent& otherComponent) = 0;
-    virtual void SubtractValues(const StateComponent& otherComponent) = 0;
-    virtual std::unique_ptr<StateComponent> Clone() const = 0;
-    virtual bool IsEmpty() const = 0;
-    virtual size_t GetHash() const = 0;
-};
+void BaseAction::Configure(const std::vector<std::unique_ptr<StateComponent>>& goal)
+{
+	requirements = GenerateRequirements(goal);
+	results = GenerateResults(goal);
+}
 
-class BaseAction {
-public:
-    virtual ~BaseAction() = default;
-    
-    std::vector<std::unique_ptr<StateComponent>> requirements;
-    std::vector<std::unique_ptr<StateComponent>> results;
-    
-    virtual bool IsRelevant(const std::unique_ptr<StateComponent>& goal) const = 0;
-    virtual std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(const std::unique_ptr<StateComponent>& goal) = 0;
-    virtual std::vector<std::unique_ptr<StateComponent>> GenerateResults(const std::unique_ptr<StateComponent>& goal) = 0;
-    void Configure(const std::unique_ptr<StateComponent>& goal) {
-        requirements = GenerateRequirements(goal);
-        results = GenerateResults(goal);
-    }
-};
+float BaseAction::GetCost() const { return 1.0f; }
 
-template <typename... ActionTypes>
-class ActionGenerator {
-public:
-    std::vector<std::unique_ptr<BaseAction>> GenerateActions(const std::unique_ptr<StateComponent>& goal) {
-        std::vector<std::unique_ptr<BaseAction>> actions;
 
-        // For each action type, instantiate and add if relevant
-        (CreateActionIfRelevant<ActionTypes>(goal, actions), ...);
+namespace StateComponentUtils
+{
+	std::vector<std::unique_ptr<StateComponent>> CombineComponentLists(
+		const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
+		const std::vector<std::unique_ptr<StateComponent>>& addComponents)
+	{
+		std::map<std::type_index, std::unique_ptr<StateComponent>> componentTypeToUpdatedValue;
 
-        return actions;
-    }
+		// Add base components to the map
+		for (const auto& baseComponent : baseComponents)
+		{
+			std::type_index typeIndex = typeid(*baseComponent);
+			componentTypeToUpdatedValue[typeIndex] = baseComponent->Clone();
+		}
 
-private:
-    template <typename ActionType>
-    void CreateActionIfRelevant(const std::unique_ptr<StateComponent>& goal, 
-                                std::vector<std::unique_ptr<BaseAction>>& actions) {
-        std::unique_ptr<ActionType> action = std::make_unique<ActionType>();
-        
-        if (action->IsRelevant(goal)) {
-            action->Configure(goal); // Populate requirements and results
-            actions.push_back(std::move(action)); // Add configured action to list
-        }
-    }
-};
+		// Add or update components based on addComponents
+		for (const auto& addComponent : addComponents)
+		{
+			std::type_index typeIndex = typeid(*addComponent);
+			if (componentTypeToUpdatedValue.count(typeIndex))
+			{
+				// If component of this type already exists, add to it
+				componentTypeToUpdatedValue[typeIndex]->AddValues(*addComponent);
+			}
+			else
+			{
+				// Otherwise, clone and add the new component
+				componentTypeToUpdatedValue[typeIndex] = addComponent->Clone();
+			}
+		}
 
-namespace StateComponentUtils {
+		// Move unique_ptr values from the map to the vector
+		std::vector<std::unique_ptr<StateComponent>> combinedComponents;
+		combinedComponents.reserve(componentTypeToUpdatedValue.size());
+		for (auto& [typeIndex, component] : componentTypeToUpdatedValue)
+		{
+			combinedComponents.push_back(std::move(component));
+		}
 
-    std::vector<std::unique_ptr<StateComponent>> CombineComponentLists(
-        const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
-        const std::vector<std::unique_ptr<StateComponent>>& addComponents)
-    {
-        std::map<std::type_index, std::unique_ptr<StateComponent>> componentTypeToUpdatedValue;
+		return combinedComponents;
+	}
 
-        // Add base components to the map
-        for (const auto& baseComponent : baseComponents) {
-            std::type_index typeIndex = typeid(*baseComponent);
-            componentTypeToUpdatedValue[typeIndex] = baseComponent->Clone();
-        }
+	std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
+		const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
+		const std::vector<std::unique_ptr<StateComponent>>& componentsToRemove)
+	{
+		std::vector<std::unique_ptr<StateComponent>> updatedComponents;
 
-        // Add or update components based on addComponents
-        for (const auto& addComponent : addComponents) {
-            std::type_index typeIndex = typeid(*addComponent);
-            if (componentTypeToUpdatedValue.count(typeIndex)) {
-                // If component of this type already exists, add to it
-                componentTypeToUpdatedValue[typeIndex]->AddValues(*addComponent);
-            }
-            else {
-                // Otherwise, clone and add the new component
-                componentTypeToUpdatedValue[typeIndex] = addComponent->Clone();
-            }
-        }
+		for (const auto& baseComponent : baseComponents)
+		{
+			bool toRemove = false;
+			std::unique_ptr<StateComponent> clonedBase = baseComponent->Clone(); // Deep copy
 
-        // Move unique_ptr values from the map to the vector
-        std::vector<std::unique_ptr<StateComponent>> combinedComponents;
-        combinedComponents.reserve(componentTypeToUpdatedValue.size());
-        for (auto& [typeIndex, component] : componentTypeToUpdatedValue)
-        {
-            combinedComponents.push_back(std::move(component));
-        }
+			for (const auto& removeComponent : componentsToRemove)
+			{
+				if (typeid(*baseComponent) == typeid(*removeComponent))
+				{
+					clonedBase->SubtractValues(*removeComponent);
+					toRemove = true;
+					break;
+				}
+			}
 
-        return combinedComponents;
-    }
+			if (!toRemove || !clonedBase->IsEmpty())
+			{
+				updatedComponents.push_back(std::move(clonedBase));
+			}
+		}
 
-    std::vector<std::unique_ptr<StateComponent>> RemoveComponentList(
-        const std::vector<std::unique_ptr<StateComponent>>& baseComponents,
-        const std::vector<std::unique_ptr<StateComponent>>& componentsToRemove)
-    {
-        std::vector<std::unique_ptr<StateComponent>> updatedComponents;
-
-        for (const auto& baseComponent : baseComponents) {
-            bool toRemove = false;
-            std::unique_ptr<StateComponent> clonedBase = baseComponent->Clone(); // Deep copy
-
-            for (const auto& removeComponent : componentsToRemove) {
-                if (typeid(*baseComponent) == typeid(*removeComponent)) {
-                    clonedBase->SubtractValues(*removeComponent);
-                    toRemove = true;
-                    break;
-                }
-            }
-
-            if (!toRemove || !clonedBase->IsEmpty()) {
-                updatedComponents.push_back(std::move(clonedBase));
-            }
-        }
-
-        return updatedComponents;
-    }
-
+		return updatedComponents;
+	}
 } // namespace GoalUtils
 
-class GoapPlanner {
-private:
-    // Map to store hash functions for each StateComponent type
-    std::unordered_set<std::type_index> registeredComponents;
 
-    // Set to store registered actions (consider using a vector if order matters)
-    std::unordered_set<std::type_index> registeredActions;
 
-public:
-    // Registers a StateComponent type and its associated hash function
-    template <typename T>
-    void RegisterStateComponent() {
-        static_assert(std::is_base_of_v<StateComponent, T>, "T must derive from StateComponent");
+#pragma region A*_Node_and_Supporting_Structures
+//=============================================================================
+// A* Node and Supporting Structures
+//=============================================================================
+ GoapNode::GoapNode(std::vector<std::unique_ptr<StateComponent>>&& state,
+	         std::vector<std::unique_ptr<StateComponent>>&& goal)
+		: currentState(std::move(state)), currentGoal(std::move(goal))
+{
+}
 
-        registeredComponents.insert(std::type_index(typeid(T)));
-    }
+// Helper to calculate fCost
+void GoapNode::CalculateFCost()
+{
+	fCost = gCost + hCost;
+}
 
-    // Registers an Action type
-    template <typename T>
-    void RegisterAction() {
-        static_assert(std::is_base_of_v<BaseAction, T>, "T must derive from BaseAction");
+// Helper to clone a state vector
+std::vector<std::unique_ptr<StateComponent>> GoapNode::CloneState(
+	const std::vector<std::unique_ptr<StateComponent>>& state)
+{
+	std::vector<std::unique_ptr<StateComponent>> newState;
+	newState.reserve(state.size());
+	for (const auto& comp : state)
+	{
+		newState.push_back(comp->Clone());
+	}
+	return newState;
+}
 
-        registeredActions.insert(std::type_index(typeid(T)));
-    }
 
-    // Plans a sequence of actions to achieve the goal state from the current state
-    std::vector<std::unique_ptr<BaseAction>> Plan(
-        const std::vector<std::unique_ptr<StateComponent>>& currentState,
-        const std::vector<std::unique_ptr<StateComponent>>& goalState
-    ) {
-        // 1. Generate relevant actions using ActionGenerator and registered actions
-        // 2. Use A* search (or another planning algorithm) to find the optimal action sequence
-        // 3. Return the action sequence
+// Comparator for A* priority queue (min-heap on fCost)
 
-        // Placeholder for the planning logic (needs implementation)
-        std::vector<std::unique_ptr<BaseAction>> plan;
-        return plan;
-    }
-};
+	bool CompareGoapNodes::operator()(const std::shared_ptr<GoapNode>& a, const std::shared_ptr<GoapNode>& b) const
+	{
+		// Node with lower fCost has higher priority
+		if (std::abs(a->fCost - b->fCost) > 1e-6)
+		{
+			// Tolerance for float comparison
+			return a->fCost > b->fCost;
+		}
+		// Tie-breaking (e.g., prefer lower hCost) can be added here
+		return a->hCost > b->hCost;
+	}
+
+
+// Define the heuristic function signature
+/*using HeuristicFunction = std::function<float(const std::vector<std::unique_ptr<StateComponent>>& /*state#1#,
+                                              const std::vector<std::unique_ptr<StateComponent>>& /*goal#1#)>;*/
+
+#pragma endregion
+
+
+
+
+
 

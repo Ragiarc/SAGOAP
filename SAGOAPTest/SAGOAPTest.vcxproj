@@ -35,11 +35,29 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\$(ProjectName)\</OutDir>
+  </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="test.cpp" />
+    <ClCompile Include="TestStateActionSpaces\SurvivalWorld\Actions\A_Move.cpp" />
+    <ClCompile Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SC_DiscreteLocation.cpp" />
+    <ClCompile Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SurvivalComponents.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="TestStateActionSpaces\SurvivalWorld\Actions\A_Move.h" />
+    <ClInclude Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SC_DiscreteLocation.h" />
+    <ClInclude Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SurvivalComponents.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SAGOAP\SAGOAP.vcxproj">
+      <Project>{a4aae2aa-bc33-44f6-a86b-af73e17b962e}</Project>
+      <Name>SAGOAP</Name>
+    </ProjectReference>
   </ItemGroup>
   <ItemDefinitionGroup />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
@@ -71,6 +89,8 @@
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/FS</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)include;%(AdditionalIncludeDirectories);$(SolutionDir)SAGOAP\;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
