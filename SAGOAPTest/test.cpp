@@ -1,534 +1,472 @@
 #include "gtest/gtest.h"
 #include "SAGOAP.h"
+using namespace SAGOAP;
+using namespace SAGOAP::Utils;
+// =============================================================================
+// 1. DEFINE USER-SPECIFIC STATE TYPES
+// These are the concrete structs the user of the library would create.
+// They must be copy-constructible and have the required methods.
+// =============================================================================
 
-// test components
-class HealthStateComponent : public StateComponent {
-public:
-  int value;
+struct LocationState
+{
+	std::string name;
 
-  HealthStateComponent(int v) : value(v) {}
-
-  std::unique_ptr<StateComponent> Clone() const override {
-    return std::make_unique<HealthStateComponent>(value);
-  }
-
-  void AddValues(const StateComponent& otherComponent) override {
-    const auto* other = dynamic_cast<const HealthStateComponent*>(&otherComponent);
-    if (other) value += other->value;
-  }
-
-  void SubtractValues(const StateComponent& otherComponent) override {
-    const auto* other = dynamic_cast<const HealthStateComponent*>(&otherComponent);
-    if (other) value -= other->value;
-  }
-
-  bool IsEmpty() const override {
-    return value <= 0;
-  }
-
-  bool operator==(const HealthStateComponent& other) const {
-    return value == other.value;
-  }
-
-  size_t GetHash() const override
-  {
-    return std::hash<int>()(value) ^ std::hash<std::string>()("Health");
-  }
+	void AddValues(const LocationState& other) { name = other.name; /* Location is replaced */ }
+	void SubtractValues(const LocationState& other) { if (name == other.name) name.clear(); }
+	size_t GetHash() const { return std::hash<std::string>()(name); }
+	bool IsEmpty() const { return name.empty(); }
 };
 
-class ManaStateComponent : public StateComponent {
-public:
-  int value;
+struct InventoryState
+{
+	std::map<std::string, int> items;
 
-  ManaStateComponent(int v) : value(v) {}
-
-  std::unique_ptr<StateComponent> Clone() const override {
-    return std::make_unique<ManaStateComponent>(value);
-  }
-
-  void AddValues(const StateComponent& otherComponent) override {
-    const auto* other = dynamic_cast<const ManaStateComponent*>(&otherComponent);
-    if (other) value += other->value;
-  }
-
-  void SubtractValues(const StateComponent& otherComponent) override {
-    const auto* other = dynamic_cast<const ManaStateComponent*>(&otherComponent);
-    if (other) value -= other->value;
-  }
-
-  bool IsEmpty() const override {
-    return value <= 0;
-  }
-
-  bool operator==(const ManaStateComponent& other) const {
-    return value == other.value;
-  }
-
-  size_t GetHash() const override {
-    return std::hash<int>()(value) ^ std::hash<std::string>()("Mana"); 
-  }
-};
-
-// test actions
-class HealAction : public BaseAction {
-public:
-  float cost = 1.0f;
-  HealAction(float c = 1.0f) : cost(c) {}
-
-  bool IsRelevant(const std::vector<std::unique_ptr<StateComponent>>& /*currentState*/,
-                  const std::vector<std::unique_ptr<StateComponent>>& goal) const override {
-    return std::any_of(goal.begin(), goal.end(), [](const auto& comp) {
-        return dynamic_cast<const HealthStateComponent*>(comp.get()) != nullptr;
-    });
-  }
-
-  std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(
-      const std::vector<std::unique_ptr<StateComponent>>& /*goal*/) override {
-    std::vector<std::unique_ptr<StateComponent>> reqs;
-    reqs.push_back(std::make_unique<ManaStateComponent>(10));
-    return reqs;
-  }
-
-  std::vector<std::unique_ptr<StateComponent>> GenerateResults(
-      const std::vector<std::unique_ptr<StateComponent>>& /*goal*/) override {
-    std::vector<std::unique_ptr<StateComponent>> res;
-    res.push_back(std::make_unique<HealthStateComponent>(15));
-    return res;
-  }
-    
-  std::unique_ptr<BaseAction> Clone() const override {
-    return std::make_unique<HealAction>(cost);
-  }
-    
-  float GetCost() const override { return cost; }
-};
-
-class ManaBoostAction : public BaseAction {
-public:
-  float cost = 1.0f;
-  ManaBoostAction(float c = 1.0f) : cost(c) {}
-
-  bool IsRelevant(const std::vector<std::unique_ptr<StateComponent>>& /*currentState*/,
-                  const std::vector<std::unique_ptr<StateComponent>>& goal) const override {
-    return std::any_of(goal.begin(), goal.end(), [](const auto& comp) {
-        return dynamic_cast<const ManaStateComponent*>(comp.get()) != nullptr;
-    });
-  }
-
-  std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(
-      const std::vector<std::unique_ptr<StateComponent>>& /*goal*/) override {
-    return {}; // No requirements
-  }
-
-  std::vector<std::unique_ptr<StateComponent>> GenerateResults(
-      const std::vector<std::unique_ptr<StateComponent>>& /*goal*/) override {
-    std::vector<std::unique_ptr<StateComponent>> res;
-    res.push_back(std::make_unique<ManaStateComponent>(20)); // Was 15, changed to 20 for variety
-    return res;
-  }
-    
-  std::unique_ptr<BaseAction> Clone() const override {
-    return std::make_unique<ManaBoostAction>(cost);
-  }
-
-  float GetCost() const override { return cost; }
-};
-
-class LocationStateComponent : public StateComponent {
-public:
-	std::string locationName;
-
-	LocationStateComponent(std::string name) : locationName(std::move(name)) {}
-
-	std::unique_ptr<StateComponent> Clone() const override {
-		return std::make_unique<LocationStateComponent>(locationName);
-	}
-
-	void AddValues(const StateComponent& otherComponent) override {
-		const auto* other = dynamic_cast<const LocationStateComponent*>(&otherComponent);
-		if (other) {
-			locationName = other->locationName; // Replace current location
+	void AddValues(const InventoryState& other) {
+		for (const auto& [item, quant] : other.items) {
+			items[item] += quant;
+			if (items[item] <= 0) {
+				items.erase(item);
+			}
 		}
 	}
-
-	void SubtractValues(const StateComponent& otherComponent) override {
-		const auto* other = dynamic_cast<const LocationStateComponent*>(&otherComponent);
-		if (other && other->locationName == locationName) {
-			locationName.clear(); // Or set to a specific "undefined" location
+	void SubtractValues(const InventoryState& other) {
+		// Subtracting is the same as adding a negative delta
+		InventoryState negative_delta;
+		for (const auto& [item, quant] : other.items) {
+			negative_delta.items[item] = -quant;
 		}
+		AddValues(negative_delta);
 	}
-
-	bool IsEmpty() const override {
-		return locationName.empty();
+	size_t GetHash() const {
+		size_t seed = 0;
+		for (const auto& [name, quant] : items) {
+			seed ^= std::hash<std::string>()(name) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+			seed ^= std::hash<int>()(quant) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+		}
+		return seed;
 	}
-
-	bool operator==(const LocationStateComponent& other) const {
-		return locationName == other.locationName;
-	}
-
-	size_t GetHash() const override {
-		return std::hash<std::string>()(locationName) ^ std::hash<std::string>()("LocationStateComponent");
-	}
+	bool IsEmpty() const { return items.empty(); }
 };
 
-class ItemStateComponent : public StateComponent {
-public:
-	std::string itemName;
-	bool hasItem;
-
-	ItemStateComponent(std::string name, bool has = true) : itemName(std::move(name)), hasItem(has) {}
-
-	std::unique_ptr<StateComponent> Clone() const override {
-		return std::make_unique<ItemStateComponent>(itemName, hasItem);
-	}
-
-	void AddValues(const StateComponent& otherComponent) override {
-		const auto* other = dynamic_cast<const ItemStateComponent*>(&otherComponent);
-		if (other && other->itemName == itemName) {
-			hasItem = other->hasItem; // Set to the new state
-		}
-	}
-
-	void SubtractValues(const StateComponent& otherComponent) override {
-		const auto* other = dynamic_cast<const ItemStateComponent*>(&otherComponent);
-		// If we are asked to subtract a "hasItem=true" state, it means we lose the item.
-		if (other && other->itemName == itemName && other->hasItem) {
-			hasItem = false;
-		}
-	}
-
-	bool IsEmpty() const override {
-		return !hasItem; // Empty if we don't have the item
-	}
-
-	bool operator==(const ItemStateComponent& other) const {
-		return itemName == other.itemName && hasItem == other.hasItem;
-	}
-
-	size_t GetHash() const override {
-		return std::hash<std::string>()(itemName) ^ std::hash<bool>()(hasItem) ^ std::hash<std::string>()("ItemStateComponent");
-	}
+struct Recipe {
+	// Things that are consumed
+	InventoryState ingredients;
+	// Things that are required but not consumed
+	InventoryState tools;
+	// The output of the craft
+	InventoryState products;
+	// The location required for the craft (e.g., "Forge")
+	std::string location;
 };
 
-class MoveToAction : public BaseAction {
-public:
-    std::string targetLocationName; // Set by GenerateRequirements based on the goal
-    float cost;
+struct KnownRecipesState {
+	std::vector<Recipe> recipes;
 
-    MoveToAction(float c = 1.0f)
-        : targetLocationName(""), cost(c) {}
+	// This state is just a list, so these methods are simple.
+	void AddValues(const KnownRecipesState& other) { recipes.insert(recipes.end(), other.recipes.begin(), other.recipes.end()); }
+	void SubtractValues(const KnownRecipesState&) { /* Can't subtract recipes in this model */ }
+	size_t GetHash() const { return recipes.size(); /* Simple hash for testing */ }
+	bool IsEmpty() const { return recipes.empty(); }
+};
+
+// =============================================================================
+// 2. DEFINE USER-SPECIFIC ACTIONS
+// =============================================================================
+
+class CraftAction : public BaseAction {
+private:
+    // This action instance, once configured, will represent one specific recipe.
+    // std::optional is perfect for state that is set after construction.
+    std::optional<Recipe> chosenRecipe;
+
+public:
+    // Now default-constructible!
+    CraftAction() = default;
+
+    float GetCost() const override { return 1.0f; }
 
     std::unique_ptr<BaseAction> Clone() const override {
-        auto clonedAction = std::make_unique<MoveToAction>(cost);
-        clonedAction->targetLocationName = this->targetLocationName; // Copy configured target
-
-        for(const auto& req_comp : this->requirements) {
-            if(req_comp) clonedAction->requirements.push_back(req_comp->Clone());
-        }
-        for(const auto& res_comp : this->results) {
-            if(res_comp) clonedAction->results.push_back(res_comp->Clone());
-        }
-        return clonedAction;
+        auto clone = std::make_unique<CraftAction>();
+        // CRITICAL: The clone must copy the configured state!
+        clone->chosenRecipe = this->chosenRecipe;
+        clone->requirements = this->requirements;
+        clone->results = this->results;
+        return clone;
     }
 
-    bool IsRelevant(const std::vector<std::unique_ptr<StateComponent>>& currentState,
-                    const std::vector<std::unique_ptr<StateComponent>>& goal) const override {
-        std::string currentActualLocation = "";
-        for (const auto& comp : currentState) {
-            if (const auto* locComp = dynamic_cast<const LocationStateComponent*>(comp.get())) {
-                currentActualLocation = locComp->locationName;
-                break;
-            }
+    bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
+        const auto* knownRecipes = Get<KnownRecipesState>(currentState);
+        const auto* invGoal = Get<InventoryState>(goal);
+
+        if (!knownRecipes || !invGoal) {
+            return false; // Can't craft if we know no recipes or have no inventory goal.
         }
 
-        for (const auto& comp : goal) {
-            if (const auto* locGoal = dynamic_cast<const LocationStateComponent*>(comp.get())) {
-                if (!locGoal->locationName.empty() && locGoal->locationName != currentActualLocation) {
-                    return true; // Relevant if goal wants a location we're not at.
+        // Is there at least one known recipe that can produce an item in the goal?
+        for (const auto& recipe : knownRecipes->recipes) {
+            for (const auto& [productName, quant] : recipe.products.items) {
+                if (invGoal->items.count(productName)) {
+                    return true; // Found a relevant recipe.
                 }
             }
         }
         return false;
     }
-
-    std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(
-        const std::vector<std::unique_ptr<StateComponent>>& goal) override {
-        // --- Action-specific parameter setting happens here ---
-        this->targetLocationName = ""; // Reset before finding a new target from the goal
+    
+    AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
+        const auto* knownRecipes = Get<KnownRecipesState>(currentState);
+        const auto* invGoal = Get<InventoryState>(goal);
         
-        // Find the first suitable location goal to set as this action's target.
-        // Ideally, IsRelevant has already ensured such a goal exists and we're not there.
-        for (const auto& comp : goal) {
-            if (const auto* locGoal = dynamic_cast<const LocationStateComponent*>(comp.get())) {
-                if (!locGoal->locationName.empty()) {
-                    this->targetLocationName = locGoal->locationName;
-                    break; 
+        // This should always be true if IsRelevant passed, but check for safety.
+        if (!knownRecipes || !invGoal) return {};
+
+        // Find the first recipe that satisfies the goal and configure this action instance.
+        for (const auto& recipe : knownRecipes->recipes) {
+            for (const auto& [productName, quant] : recipe.products.items) {
+                if (invGoal->items.count(productName)) {
+                    // This is the recipe we will use.
+                    this->chosenRecipe = recipe;
+                    
+                    // Now generate requirements based on this chosen recipe.
+                    AgentState reqs;
+                    Set(reqs, LocationState{this->chosenRecipe->location});
+                    InventoryState allRequiredItems;
+                    allRequiredItems.AddValues(this->chosenRecipe->ingredients);
+                    allRequiredItems.AddValues(this->chosenRecipe->tools);
+                    Set(reqs, allRequiredItems);
+                    return reqs;
                 }
             }
         }
-        // --- End of action-specific parameter setting ---
-
-        // For a simple move, requirements are typically empty.
-        // If we needed to be at a "StartLocation" for this generic MoveToAction to be valid,
-        // that logic would be more complex or part of a different action type.
-        return {};
+        return {}; // Should not be reached.
     }
 
-    std::vector<std::unique_ptr<StateComponent>> GenerateResults(
-        const std::vector<std::unique_ptr<StateComponent>>& /*goal*/) override {
-        std::vector<std::unique_ptr<StateComponent>> res;
-        if (!targetLocationName.empty()) { // targetLocationName should be set by GenerateRequirements
-            res.push_back(std::make_unique<LocationStateComponent>(targetLocationName));
-        }
-        return res;
+    AgentState GenerateResults(const AgentState&, const Goal&) override {
+        // If this action wasn't configured with a recipe, it has no results.
+        if (!chosenRecipe) return {};
+
+        InventoryState delta;
+        delta.AddValues(chosenRecipe->products); 
+        delta.SubtractValues(chosenRecipe->ingredients);
+        
+        AgentState results;
+        Set(results, delta);
+        return results;
     }
-    
-    float GetCost() const override { return cost; }
 };
 
-class PickupItemAction : public BaseAction {
+class MoveToAction : public BaseAction {
 public:
-    std::string itemName;           // This will be set by GenerateRequirements from the goal
-    std::string itemLocationName;   // Location where this action can pick items up (fixed per instance type)
-    float cost;
+	std::string targetLocationName; // Configured at runtime
+	float cost = 1.0f;
 
-    // Constructor now takes the location where this specific pickup action operates.
-    PickupItemAction(std::string fixedPickupLocation, float c = 1.0f)
-        : itemName(""), itemLocationName(std::move(fixedPickupLocation)), cost(c) {}
+	bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
+		const auto* currentLoc = Get<LocationState>(currentState);
+		const auto* goalLoc = Get<LocationState>(goal);
+		if (goalLoc) {
+			return !currentLoc || currentLoc->name != goalLoc->name;
+		}
+		return false;
+	}
 
-    std::unique_ptr<BaseAction> Clone() const override {
-        // Construct with the fixed parameters for this type.
-        auto clonedAction = std::make_unique<PickupItemAction>(this->itemLocationName, this->cost);
-        clonedAction->itemName = this->itemName; // Copy the itemName configured from the goal
+	AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
+		// Set this action's specific parameters from the goal
+		if (const auto* goalLoc = Get<LocationState>(goal)) {
+			this->targetLocationName = goalLoc->name;
+		}
+		return {}; // No preconditions for a simple move
+	}
 
-        for(const auto& req : this->requirements) { if(req) clonedAction->requirements.push_back(req->Clone()); }
-        for(const auto& res : this->results) { if(res) clonedAction->results.push_back(res->Clone()); }
-        return clonedAction;
-    }
+	AgentState GenerateResults(const AgentState& currentState, const Goal& /*goal*/) override {
+		AgentState res;
+		Set(res, LocationState{this->targetLocationName});
+		return res;
+	}
 
-    bool IsRelevant(const std::vector<std::unique_ptr<StateComponent>>& currentState,
-                    const std::vector<std::unique_ptr<StateComponent>>& goal) const override {
-        std::string targetItemNameInGoal = "";
-        bool goalWantsAnItem = false;
+	std::unique_ptr<BaseAction> Clone() const override {
+		auto clone = std::make_unique<MoveToAction>();
+		clone->targetLocationName = this->targetLocationName;
+		clone->requirements = this->requirements; // BaseAction state
+		clone->results = this->results;         // BaseAction state
+		return clone;
+	}
 
-        for (const auto& comp : goal) {
-            if (const auto* itemGoal = dynamic_cast<const ItemStateComponent*>(comp.get())) {
-                if (itemGoal->hasItem && !itemGoal->itemName.empty()) {
-                    targetItemNameInGoal = itemGoal->itemName;
-                    goalWantsAnItem = true;
-                    break;
-                }
-            }
-        }
-        if (!goalWantsAnItem) return false;
-
-        for (const auto& comp : currentState) {
-            if (const auto* currentItem = dynamic_cast<const ItemStateComponent*>(comp.get())) {
-                if (currentItem->itemName == targetItemNameInGoal && currentItem->hasItem) {
-                    return false; // Already have the item
-                }
-            }
-        }
-        return true; // Relevant if goal wants an item we don't have.
-    }
-
-    std::vector<std::unique_ptr<StateComponent>> GenerateRequirements(
-        const std::vector<std::unique_ptr<StateComponent>>& goal) override {
-        // --- Action-specific parameter setting ---
-        this->itemName = ""; // Reset
-        for (const auto& comp : goal) {
-            if (const auto* itemGoal = dynamic_cast<const ItemStateComponent*>(comp.get())) {
-                if (itemGoal->hasItem && !itemGoal->itemName.empty()) {
-                    this->itemName = itemGoal->itemName; // Set the item to pick up
-                    break;
-                }
-            }
-        }
-        // --- End of action-specific parameter setting ---
-
-        std::vector<std::unique_ptr<StateComponent>> reqs;
-        if (!this->itemName.empty()) { // Only add requirements if an item was identified
-            // Requirement: Be at the location where this action can pick up items.
-            reqs.push_back(std::make_unique<LocationStateComponent>(this->itemLocationName));
-        }
-        return reqs;
-    }
-
-    std::vector<std::unique_ptr<StateComponent>> GenerateResults(
-        const std::vector<std::unique_ptr<StateComponent>>& /*goal*/) override {
-        std::vector<std::unique_ptr<StateComponent>> res;
-        if (!itemName.empty()) { // itemName should be set by GenerateRequirements
-            res.push_back(std::make_unique<ItemStateComponent>(itemName, true));
-        }
-        return res;
-    }
-    
-    float GetCost() const override { return cost; }
+	float GetCost() const override { return cost; }
 };
 
-// tests
-TEST(StateComponentUtilsTest, CombineHealthAndMana) {
-    std::vector<std::unique_ptr<StateComponent>> listA;
-    listA.push_back(std::make_unique<HealthStateComponent>(5));
 
-    std::vector<std::unique_ptr<StateComponent>> listB;
-    listB.push_back(std::make_unique<HealthStateComponent>(10));
+class GetKeyInKeyRoomAction : public BaseAction {
+public:
+	float GetCost() const override { return 1.0f; }
 
-    auto result = StateComponentUtils::CombineComponentLists(listA, listB);
-    ASSERT_EQ(result.size(), 1);
-    auto* healthComp = dynamic_cast<HealthStateComponent*>(result[0].get());
-    ASSERT_NE(healthComp, nullptr);
-    EXPECT_EQ(healthComp->value, 15);
+	bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
+		const auto* goalInv = Get<InventoryState>(goal);
+		if (goalInv && goalInv->items.count("Key")) {
+			const auto* currentInv = Get<InventoryState>(currentState);
+			return !currentInv || !currentInv->items.count("Key");
+		}
+		return false;
+	}
+
+	AgentState GenerateRequirements(const AgentState& currentState, const Goal&) override {
+		AgentState reqs;
+		Set(reqs, LocationState{"KeyRoom"});
+		return reqs;
+	}
+
+	AgentState GenerateResults(const AgentState& currentState, const Goal&) override {
+		AgentState res;
+		Set(res, InventoryState{{{"Key", 1}}});
+		return res;
+	}
+    
+	std::unique_ptr<BaseAction> Clone() const override {
+		auto clone = std::make_unique<GetKeyInKeyRoomAction>();
+		clone->requirements = this->requirements;
+		clone->results = this->results;
+		return clone;
+	}
+};
+
+class PickupIronOreAction : public BaseAction { /* Unchanged from previous test */
+public:
+	float GetCost() const override { return 1.0f; }
+	bool IsRelevant(const AgentState&, const Goal& goal) const override {
+		const auto* invGoal = Get<InventoryState>(goal); return invGoal && invGoal->items.count("IronOre");
+	}
+	AgentState GenerateRequirements(const AgentState&, const Goal&) override {
+		AgentState reqs; Set(reqs, LocationState{"Mines"}); return reqs;
+	}
+	AgentState GenerateResults(const AgentState&, const Goal&) override {
+		AgentState res; Set(res, InventoryState{{{"IronOre", 2}}}); return res;
+	}
+	std::unique_ptr<BaseAction> Clone() const override {
+		auto c = std::make_unique<PickupIronOreAction>();
+		c->requirements=this->requirements; c->results=this->results; return c;
+	}
+};
+
+
+
+// =============================================================================
+// 3. SET UP TEST FIXTURE
+// This fixture creates and configures the registry for all tests.
+// =============================================================================
+class SagoapTest : public ::testing::Test {
+protected:
+	StateTypeRegistry registry;
+
+	// This is called before each test
+	void SetUp() override {
+		registry.RegisterType<LocationState>();
+		registry.RegisterType<InventoryState>();
+	}
+};
+
+// =============================================================================
+// 4. WRITE THE TESTS
+// =============================================================================
+
+TEST_F(SagoapTest, CombineStates_ReplacesLocation) {
+    AgentState base;
+    Set(base, LocationState{"Start"});
+
+    AgentState delta;
+    Set(delta, LocationState{"End"});
+
+    AgentState result = CombineStates(base, delta, registry);
+
+    const auto* resultLoc = Get<LocationState>(result);
+    ASSERT_NE(resultLoc, nullptr);
+    EXPECT_EQ(resultLoc->name, "End");
 }
 
-TEST(StateComponentUtilsTest, RemoveHealth) {
-    std::vector<std::unique_ptr<StateComponent>> base;
-    base.push_back(std::make_unique<HealthStateComponent>(15));
+TEST_F(SagoapTest, CombineStates_AddsToInventory) {
+    AgentState base;
+    Set(base, InventoryState{{{"Wood", 5}}});
 
-    std::vector<std::unique_ptr<StateComponent>> toRemove;
-    toRemove.push_back(std::make_unique<HealthStateComponent>(10));
+    AgentState delta;
+    Set(delta, InventoryState{{{"Iron", 2}, {"Wood", 3}}});
 
-    auto result = StateComponentUtils::RemoveComponentList(base, toRemove);
-    ASSERT_EQ(result.size(), 1);
-    auto* healthComp = dynamic_cast<HealthStateComponent*>(result[0].get());
-    ASSERT_NE(healthComp, nullptr);
-    EXPECT_EQ(healthComp->value, 5); // 15 - 10 = 5, not empty
+    AgentState result = CombineStates(base, delta, registry);
 
-    std::vector<std::unique_ptr<StateComponent>> toRemoveAll;
-    toRemoveAll.push_back(std::make_unique<HealthStateComponent>(15));
-    result = StateComponentUtils::RemoveComponentList(base, toRemoveAll);
-    ASSERT_EQ(result.size(), 0); // 15 - 15 = 0, so empty and removed
+    const auto* resultInv = Get<InventoryState>(result);
+    ASSERT_NE(resultInv, nullptr);
+    EXPECT_EQ(resultInv->items.size(), 2);
+    EXPECT_EQ(resultInv->items.at("Wood"), 8);
+    EXPECT_EQ(resultInv->items.at("Iron"), 2);
 }
 
+TEST_F(SagoapTest, CombineStates_RemovesFromInventoryWithNegativeDelta) {
+    AgentState base;
+    Set(base, InventoryState{{{"Arrows", 20}}});
 
-TEST(ActionGeneratorTest, GeneratesRelevantActions_HealthMana) {
-    std::vector<std::unique_ptr<StateComponent>> currentState;
-    currentState.push_back(std::make_unique<HealthStateComponent>(10));
-    currentState.push_back(std::make_unique<ManaStateComponent>(5));
+    AgentState delta;
+    Set(delta, InventoryState{{{"Arrows", -5}}}); // Fired 5 arrows
 
-    std::vector<std::unique_ptr<StateComponent>> goalState;
-    goalState.push_back(std::make_unique<HealthStateComponent>(30)); // Goal is more health
+    AgentState result = CombineStates(base, delta, registry);
+    const auto* resultInv = Get<InventoryState>(result);
+    ASSERT_NE(resultInv, nullptr);
+    EXPECT_EQ(resultInv->items.at("Arrows"), 15);
 
-    ActionGenerator<HealAction, ManaBoostAction> generator;
-    auto actions = generator.GenerateActions(currentState, goalState);
-
-    ASSERT_EQ(actions.size(), 1); // Only HealAction is relevant to a Health goal
-    EXPECT_NE(dynamic_cast<HealAction*>(actions[0].get()), nullptr);
+    // Test removing all arrows
+    Set(delta, InventoryState{{{"Arrows", -20}}});
+    result = CombineStates(base, delta, registry);
+    resultInv = Get<InventoryState>(result);
+    ASSERT_NE(resultInv, nullptr);
+    EXPECT_TRUE(resultInv->items.empty());
 }
 
-TEST(ActionGeneratorTest, GeneratedActionHasCorrectRequirementsAndResults_HealthMana) {
-    std::vector<std::unique_ptr<StateComponent>> currentState; // Not strictly needed for this test part
-    std::vector<std::unique_ptr<StateComponent>> goalState;
-    goalState.push_back(std::make_unique<HealthStateComponent>(30));
+TEST_F(SagoapTest, SubtractStates_RemovesMetGoal) {
+    Goal goal;
+    Set(goal, LocationState{"End"});
+    Set(goal, InventoryState{{{"Key", 1}}});
 
-    ActionGenerator<HealAction> generator;
-    auto actions = generator.GenerateActions(currentState, goalState);
-    ASSERT_EQ(actions.size(), 1);
+    AgentState results_from_action;
+    Set(results_from_action, LocationState{"End"}); // This action achieved the location goal
 
-    BaseAction* action = actions[0].get();
-    ASSERT_NE(action, nullptr);
+    Goal nextGoal = SubtractStates(goal, results_from_action, registry);
 
-    // Action should have been configured, populating requirements and results
-    ASSERT_FALSE(action->requirements.empty());
-    ASSERT_FALSE(action->results.empty());
-
-    const auto& reqs = action->requirements;
-    ASSERT_EQ(reqs.size(), 1);
-    const auto* manaReq = dynamic_cast<ManaStateComponent*>(reqs[0].get());
-    ASSERT_NE(manaReq, nullptr);
-    EXPECT_EQ(manaReq->value, 10);
-
-    const auto& results = action->results;
-    ASSERT_EQ(results.size(), 1);
-    const auto* healthRes = dynamic_cast<HealthStateComponent*>(results[0].get());
-    ASSERT_NE(healthRes, nullptr);
-    EXPECT_EQ(healthRes->value, 15);
+    EXPECT_EQ(nextGoal.size(), 1);
+    EXPECT_EQ(Get<LocationState>(nextGoal), nullptr); // Location goal should be gone
+    ASSERT_NE(Get<InventoryState>(nextGoal), nullptr); // Inventory goal should remain
 }
 
-TEST(StateComponentUtilsTest, LocationCombine_ReplacesLocation) {
-    std::vector<std::unique_ptr<StateComponent>> base;
-    base.push_back(std::make_unique<LocationStateComponent>("StartPoint"));
+TEST_F(SagoapTest, ActionGenerator_GeneratesAndConfiguresAction) {
+    AgentState currentState;
+    Set(currentState, LocationState{"Start"});
 
-    std::vector<std::unique_ptr<StateComponent>> add;
-    add.push_back(std::make_unique<LocationStateComponent>("EndPoint"));
-
-    auto result = StateComponentUtils::CombineComponentLists(base, add);
-    ASSERT_EQ(result.size(), 1);
-    auto* locComp = dynamic_cast<LocationStateComponent*>(result[0].get());
-    ASSERT_NE(locComp, nullptr);
-    EXPECT_EQ(locComp->locationName, "EndPoint");
-}
-
-TEST(StateComponentUtilsTest, ItemCombine_UpdatesPossession) {
-    std::vector<std::unique_ptr<StateComponent>> base;
-    base.push_back(std::make_unique<ItemStateComponent>("Key", false)); // Initially don't have key
-
-    std::vector<std::unique_ptr<StateComponent>> add;
-    add.push_back(std::make_unique<ItemStateComponent>("Key", true)); // Add state "has key"
-
-    auto result = StateComponentUtils::CombineComponentLists(base, add);
-    ASSERT_EQ(result.size(), 1);
-    auto* itemComp = dynamic_cast<ItemStateComponent*>(result[0].get());
-    ASSERT_NE(itemComp, nullptr);
-    EXPECT_EQ(itemComp->itemName, "Key");
-    EXPECT_TRUE(itemComp->hasItem);
-}
-
-TEST(StateComponentUtilsTest, LocationRemove_ClearsLocationIfMatch) {
-    std::vector<std::unique_ptr<StateComponent>> base;
-    base.push_back(std::make_unique<LocationStateComponent>("SomePlace"));
-
-    std::vector<std::unique_ptr<StateComponent>> remove;
-    remove.push_back(std::make_unique<LocationStateComponent>("SomePlace"));
-
-    auto result = StateComponentUtils::RemoveComponentList(base, remove);
-    ASSERT_EQ(result.size(), 0); // Location becomes empty, so component is removed
-}
-
-TEST(StateComponentUtilsTest, ItemRemove_SetsNotPossessed) {
-    std::vector<std::unique_ptr<StateComponent>> base;
-    base.push_back(std::make_unique<ItemStateComponent>("Sword", true));
-
-    std::vector<std::unique_ptr<StateComponent>> remove;
-    // To remove "Sword", we subtract a component that says "Sword is possessed".
-    // The SubtractValues logic should then set hasItem to false.
-    remove.push_back(std::make_unique<ItemStateComponent>("Sword", true)); 
-
-    auto result = StateComponentUtils::RemoveComponentList(base, remove);
-    // ItemStateComponent("Sword", false) is !IsEmpty(), so it should remain if not empty.
-    // IsEmpty for ItemStateComponent means !hasItem. If after subtraction hasItem is false,
-    // it should be removed if IsEmpty() returns true.
-    // Current ItemStateComponent::IsEmpty() is `return !hasItem;`
-    // So if hasItem becomes false, IsEmpty() is true, and it's removed.
-    ASSERT_EQ(result.size(), 0); 
-}
-
-TEST(ActionGeneratorTest, MoveToAction_ConfiguresForGoalLocation)
-{
-    std::vector<std::unique_ptr<StateComponent>> currentState;
-    currentState.push_back(std::make_unique<LocationStateComponent>("Start"));
-
-    std::vector<std::unique_ptr<StateComponent>> goalState;
-    goalState.push_back(std::make_unique<LocationStateComponent>("End"));
+    Goal goal;
+    Set(goal, LocationState{"End"});
 
     ActionGenerator<MoveToAction> generator;
-    auto actions = generator.GenerateActions(currentState, goalState);
+    auto actions = generator.GenerateActions(currentState, goal);
 
     ASSERT_EQ(actions.size(), 1);
     MoveToAction* moveAction = dynamic_cast<MoveToAction*>(actions[0].get());
     ASSERT_NE(moveAction, nullptr);
 
-    // targetLocationName is set inside GenerateRequirements, which is called by BaseAction::Configure
-    EXPECT_EQ(moveAction->targetLocationName, "End"); 
-
-    ASSERT_EQ(moveAction->results.size(), 1);
-    LocationStateComponent* resultLoc = dynamic_cast<LocationStateComponent*>(moveAction->results[0].get());
+    // Check if Configure was called and set the internal state correctly
+    EXPECT_EQ(moveAction->targetLocationName, "End");
+    
+    // Check if results were generated correctly
+    const auto* resultLoc = Get<LocationState>(moveAction->results);
     ASSERT_NE(resultLoc, nullptr);
-    EXPECT_EQ(resultLoc->locationName, "End");
-    EXPECT_TRUE(moveAction->requirements.empty());
+    EXPECT_EQ(resultLoc->name, "End");
+}
 
-    std::vector<std::unique_ptr<StateComponent>> currentStateAtEnd;
-    currentStateAtEnd.push_back(std::make_unique<LocationStateComponent>("End"));
-    actions = generator.GenerateActions(currentStateAtEnd, goalState);
-    EXPECT_EQ(actions.size(), 0);
+TEST_F(SagoapTest, GoapPlanner_FindsSimplePlan) {
+    // --- Define a simple heuristic ---
+    HeuristicFunction heuristic = [](const AgentState& current, const Goal& goal) -> float {
+        // A simple heuristic just counts the number of unsatisfied goal properties.
+        float cost = 0.0f;
+        for (const auto& [type, goal_prop] : goal) {
+            auto it = current.find(type);
+            if (it == current.end()) {
+                cost += 1.0; // Property doesn't exist in current state
+            } else {
+                // A more complex heuristic would compare the values. For now, we assume if
+                // the type exists, it might be satisfied. This is a weak but functional heuristic.
+            }
+        }
+        return cost;
+    };
+
+    // --- Set up the scenario ---
+    AgentState initialState;
+    Set(initialState, LocationState{"StartRoom"});
+    Set(initialState, InventoryState{});
+
+    Goal finalGoal;
+    Set(finalGoal, InventoryState{{{"Key", 1}}});
+
+    ActionGenerator<MoveToAction, GetKeyInKeyRoomAction> actionGenerator;
+
+    // --- RUN THE PLANNER! ---
+    auto plan = GoapPlanner::Plan(initialState, finalGoal, heuristic, actionGenerator, registry);
+
+    // --- VERIFY THE PLAN ---
+    ASSERT_FALSE(plan.empty());
+    ASSERT_EQ(plan.size(), 2);
+
+    // Step 1: MoveToAction
+    MoveToAction* firstAction = dynamic_cast<MoveToAction*>(plan[0].get());
+    ASSERT_NE(firstAction, nullptr);
+    // Planner should have identified "KeyRoom" as a subgoal from GetKeyAction's requirements
+    // and configured the generic MoveToAction to go there.
+    EXPECT_EQ(firstAction->targetLocationName, "KeyRoom");
+
+    // Step 2: GetKeyInKeyRoomAction
+    GetKeyInKeyRoomAction* secondAction = dynamic_cast<GetKeyInKeyRoomAction*>(plan[1].get());
+    ASSERT_NE(secondAction, nullptr);
+}
+
+TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithLearnedRecipes) {
+    // We must register our new state type
+    registry.RegisterType<KnownRecipesState>();
+
+    // --- Define Recipes ---
+    Recipe ironIngotRecipe{/* ... */}; // Same as before
+    Recipe swordRecipe{/* ... */};     // Same as before
+    ironIngotRecipe.ingredients = InventoryState{{{"IronOre", 1}, {"Wood", 1}}};
+    ironIngotRecipe.products = InventoryState{{{"IronIngot", 1}}};
+    ironIngotRecipe.location = "Forge";
+    swordRecipe.ingredients = InventoryState{{{"IronIngot", 2}}};
+    swordRecipe.tools = InventoryState{{{"Hammer", 1}}};
+    swordRecipe.products = InventoryState{{{"Sword", 1}}};
+    swordRecipe.location = "Forge";
+
+
+    // --- Set up Initial State (with learned recipes) ---
+    AgentState initialState;
+    Set(initialState, LocationState{"Village"});
+    Set(initialState, InventoryState{{{"Hammer", 1}, {"Wood", 1}}});
+    // The agent "knows" these recipes. This could be updated dynamically.
+    Set(initialState, KnownRecipesState{{ironIngotRecipe, swordRecipe}});
+
+    // --- Goal is unchanged ---
+    Goal finalGoal;
+    Set(finalGoal, InventoryState{{{"Sword", 1}}});
+
+    // --- ActionGenerator is simple again ---
+    // CraftAction is now default-constructible.
+    ActionGenerator<MoveToAction, PickupIronOreAction, CraftAction> actionGenerator;
+
+    HeuristicFunction heuristic = [](const AgentState&, const Goal& goal) -> float {
+        return static_cast<float>(goal.size());
+    };
+
+    // --- Run Planner ---
+    auto plan = GoapPlanner::Plan(initialState, finalGoal, heuristic, actionGenerator, registry);
+
+    // --- Verify Plan ---
+    ASSERT_FALSE(plan.empty());
+    ASSERT_EQ(plan.size(), 5);
+
+    // Step 1 & 2 are unchanged
+    MoveToAction* step1 = dynamic_cast<MoveToAction*>(plan[0].get());
+    ASSERT_NE(step1, nullptr);
+    EXPECT_EQ(step1->targetLocationName, "Mines");
+
+    PickupIronOreAction* step2 = dynamic_cast<PickupIronOreAction*>(plan[1].get());
+    ASSERT_NE(step2, nullptr);
+
+    // Step 3 is unchanged
+    MoveToAction* step3 = dynamic_cast<MoveToAction*>(plan[2].get());
+    ASSERT_NE(step3, nullptr);
+    EXPECT_EQ(step3->targetLocationName, "Forge");
+
+    // Step 4 & 5 are now generic CraftActions, we verify them by their results
+    CraftAction* step4 = dynamic_cast<CraftAction*>(plan[3].get());
+    ASSERT_NE(step4, nullptr);
+    const auto* ingotResult = Get<InventoryState>(step4->results);
+    ASSERT_NE(ingotResult, nullptr);
+    EXPECT_TRUE(ingotResult->items.count("IronIngot")); // It's the ingot-crafting action
+
+    CraftAction* step5 = dynamic_cast<CraftAction*>(plan[4].get());
+    ASSERT_NE(step5, nullptr);
+    const auto* swordResult = Get<InventoryState>(step5->results);
+    ASSERT_NE(swordResult, nullptr);
+    EXPECT_TRUE(swordResult->items.count("Sword")); // It's the sword-crafting action
 }

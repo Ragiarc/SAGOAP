@@ -1,3 +1,4 @@
+/*
 #pragma once
 #include "../../../../SAGOAP/SAGOAP.cpp"
 
@@ -12,3 +13,4 @@ public:
     int y_location;
     
 };
+*/

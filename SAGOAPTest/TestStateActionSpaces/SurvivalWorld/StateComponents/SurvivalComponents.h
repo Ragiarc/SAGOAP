@@ -1,3 +1,4 @@
+/*
 #pragma once
 #include "SAGOAP.h"
 
@@ -20,8 +21,8 @@ public:
 	LocationComponent(int id) : locationId(id) {}
 
 	// --- StateComponent Overrides ---
-	void AddValues(const StateComponent& otherComponent) override { /* Location likely doesn't add */ }
-	void SubtractValues(const StateComponent& otherComponent) override { /* Location likely doesn't subtract */ }
+	void AddValues(const StateComponent& otherComponent) override { /* Location likely doesn't add #1# }
+	void SubtractValues(const StateComponent& otherComponent) override { /* Location likely doesn't subtract #1# }
 	std::unique_ptr<StateComponent> Clone() const override { return std::make_unique<LocationComponent>(locationId); }
 	bool IsEmpty() const override;
 	// Example: Invalid ID is empty
@@ -56,5 +57,6 @@ public:
 	const HarvestInfo* GetHarvestInfo() const override;
 	const LocationComponent* GetLocationComponent() const override;
 };
+*/
 
 

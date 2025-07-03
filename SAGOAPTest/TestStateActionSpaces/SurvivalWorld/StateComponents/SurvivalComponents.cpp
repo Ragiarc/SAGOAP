@@ -1,3 +1,4 @@
+/*
 #include "SurvivalComponents.h"
 
 bool LocationComponent::IsEmpty() const
@@ -12,3 +13,4 @@ size_t LocationComponent::GetHash() const
 
 bool LocationComponent::operator==(const LocationComponent& other) const
 { return locationId == other.locationId; }
+*/

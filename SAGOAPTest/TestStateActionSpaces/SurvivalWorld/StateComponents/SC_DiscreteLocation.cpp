@@ -1,3 +1,4 @@
+/*
 #include "SC_DiscreteLocation.h"
 
 void SC_DiscreteLocation::AddValues(const StateComponent& otherComponent)
@@ -18,3 +19,4 @@ bool SC_DiscreteLocation::IsEmpty() const
 {
     return false;
 }
+*/
