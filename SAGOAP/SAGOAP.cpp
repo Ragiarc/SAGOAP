@@ -54,14 +54,6 @@ namespace SAGOAP
         return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
     }
     
-
-    // Explicitly instantiate the template for any linker issues, or move to INL if preferred
-    // For a library, it's often better to keep this in the .cpp and force the user to define their
-    // action generators, or provide a header-only library. For now, this is fine.
-    // template class GoapPlanner; // This may cause issues depending on compiler. Best to keep template def in header/inl.
-    // Let's move the GoapPlanner::Plan definition into the .inl file as well to avoid linker issues with templates.
-
-
     // =============================================================================
     // Utility Functions
     // =============================================================================

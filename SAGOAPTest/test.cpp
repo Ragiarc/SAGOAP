@@ -229,7 +229,7 @@ public:
 	}
 };
 
-class PickupIronOreAction : public BaseAction { /* Unchanged from previous test */
+class PickupIronOreAction : public BaseAction { 
 public:
 	float GetCost() const override { return 1.0f; }
 	bool IsRelevant(const AgentState&, const Goal& goal) const override {
@@ -250,7 +250,7 @@ public:
 
 
 // =============================================================================
-// 3. SET UP TEST FIXTURE
+// TEST FIXTURE
 // This fixture creates and configures the registry for all tests.
 // =============================================================================
 class SagoapTest : public ::testing::Test {
@@ -261,11 +261,12 @@ protected:
 	void SetUp() override {
 		registry.RegisterType<LocationState>();
 		registry.RegisterType<InventoryState>();
+		registry.RegisterType<KnownRecipesState>();
 	}
 };
 
 // =============================================================================
-// 4. WRITE THE TESTS
+// TESTS
 // =============================================================================
 
 TEST_F(SagoapTest, CombineStates_ReplacesLocation) {
@@ -403,9 +404,6 @@ TEST_F(SagoapTest, GoapPlanner_FindsSimplePlan) {
 }
 
 TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithLearnedRecipes) {
-    // We must register our new state type
-    registry.RegisterType<KnownRecipesState>();
-
     // --- Define Recipes ---
     Recipe ironIngotRecipe{/* ... */}; // Same as before
     Recipe swordRecipe{/* ... */};     // Same as before
