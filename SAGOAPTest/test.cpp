@@ -293,6 +293,8 @@ protected:
 		registry.RegisterType<LocationState>();
 		registry.RegisterType<InventoryState>();
 		registry.RegisterType<KnownRecipesState>();
+
+		SAGOAP::Debug::SetRegistryForVisualization(&registry);
 	}
 };
 
@@ -301,6 +303,7 @@ protected:
 // =============================================================================
 
 TEST_F(SagoapTest, CombineStates_ReplacesLocation) {
+	int a = 5;
     AgentState base;
     Set(base, LocationState{"Start"});
 
@@ -360,7 +363,7 @@ TEST_F(SagoapTest, SubtractStates_RemovesMetGoal) {
 
     Goal nextGoal = SubtractStates(goal, results_from_action, registry);
 
-    EXPECT_EQ(nextGoal.size(), 1);
+    EXPECT_EQ(nextGoal.properties.size(), 1);
     EXPECT_EQ(Get<LocationState>(nextGoal), nullptr); // Location goal should be gone
     ASSERT_NE(Get<InventoryState>(nextGoal), nullptr); // Inventory goal should remain
 }
@@ -393,9 +396,9 @@ TEST_F(SagoapTest, GoapPlanner_FindsSimplePlan) {
     HeuristicFunction heuristic = [](const AgentState& current, const Goal& goal) -> float {
         // A simple heuristic just counts the number of unsatisfied goal properties.
         float cost = 0.0f;
-        for (const auto& [type, goal_prop] : goal) {
-            auto it = current.find(type);
-            if (it == current.end()) {
+        for (const auto& [type, goal_prop] : goal.properties) {
+            auto it = current.properties.find(type);
+            if (it == current.properties.end()) {
                 cost += 1.0; // Property doesn't exist in current state
             } else {
                 // A more complex heuristic would compare the values. For now, we assume if
@@ -463,7 +466,7 @@ TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithLearnedRecipes) {
     ActionGenerator<MoveToAction, PickupIronOreAction, CraftAction> actionGenerator;
 
     HeuristicFunction heuristic = [](const AgentState&, const Goal& goal) -> float {
-        return static_cast<float>(goal.size());
+        return static_cast<float>(goal.properties.size());
     };
 
     // --- Run Planner ---

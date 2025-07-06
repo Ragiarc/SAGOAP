@@ -1,15 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
 
+    <Type Name="int">
+        <DisplayString>!!! NATVIS LOADED !!!</DisplayString>
+    </Type>
     <!-- =================================================================== -->
     <!--  Generic Visualizer for AgentState                                  -->
     <!-- =================================================================== -->
     <Type Name="SAGOAP::AgentState">
-        <!-- Call our C-style helper function to get the display string! -->
-        <DisplayString>{GetAgentStateDebugString(this),s8}</DisplayString>
-        <!-- We can still let the user expand the raw map if they want. -->
+        <!-- Check for the debug registry. If valid, call our helper. -->
+        <DisplayString Condition="(void*)g_pDebugRegistry != 0">{GetAgentStateDebugString(this),s8}</DisplayString>
+        <!-- Fallback if no registry is set for debugging. -->
+        <DisplayString>State (size={properties._Mypair._Myval2._Mysize}, no registry)</DisplayString>
         <Expand>
-            <ExpandedItem>_Mypair._Myval2._Myhead</ExpandedItem>
+            <!-- When expanded, just show the underlying map directly. -->
+            <ExpandedItem>properties</ExpandedItem>
         </Expand>
     </Type>
 
@@ -28,13 +33,9 @@
         </Expand>
     </Type>
 
-    <Type Name="std::unique_ptr<SAGOAP::BaseAction,std::default_delete<SAGOAP::BaseAction>>">
-        <DisplayString>{_Mypair._Myval2->GetName(),s8} (Cost: {_Mypair._Myval2->GetCost()})</DisplayString>
-        <Expand>
-            <Item Name="Requirements">{GetAgentStateDebugString(&amp;(_Mypair._Myval2->requirements)),s8}</Item>
-            <Item Name="Results">{GetAgentStateDebugString(&amp;(_Mypair._Myval2->results)),s8}</Item>
-            <ExpandedItem>_Mypair._Myval2</ExpandedItem>
-        </Expand>
-    </Type>
+    <!--<Type Name="std::unique_ptr<SAGOAP::BaseAction,std::default_delete<SAGOAP::BaseAction>>">
+        <AlternativeType>SAGOAP::BaseAction *</AlternativeType>
+        <DisplayString>{_Mypair._Myval2}</DisplayString>
+    </Type>-->
 
 </AutoVisualizer>

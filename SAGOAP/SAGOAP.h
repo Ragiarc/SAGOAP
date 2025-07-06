@@ -16,7 +16,9 @@ namespace SAGOAP
 	using StateProperty = std::any;
 
 	// The Agent's state is a map from a type to its value.
-	using AgentState = std::map<std::type_index, StateProperty>;
+	struct AgentState {
+		std::map<std::type_index, StateProperty> properties;
+	};
 
 	// Forward declaration for the planner
 	class StateTypeRegistry;
@@ -170,6 +172,14 @@ namespace SAGOAP
 		// ToString for Debugging
 		std::string DebugToString(const AgentState& state, const StateTypeRegistry& registry);
 	} // namespace Utils
+
+	namespace Debug
+	{
+		// Call this function once at the start of your main/test to enable
+		// rich debugger visualizations for AgentState and Actions.
+		void SetRegistryForVisualization(const StateTypeRegistry* registry);
+	}
+	
 }
 
 #ifdef __cplusplus

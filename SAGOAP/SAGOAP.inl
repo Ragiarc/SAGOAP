@@ -88,8 +88,6 @@ namespace SAGOAP
         const ActionGeneratorType& actionGenerator,
         const StateTypeRegistry& registry)
     {
-        g_pDebugRegistry = registry;
-        
         // A helper function for hashing state-goal pairs inside the planner
         auto computeStateGoalHash = [&](const AgentState& state, const Goal& goal) -> size_t {
             size_t h1 = Utils::GetStateHash(state, registry);
@@ -112,7 +110,7 @@ namespace SAGOAP
             std::shared_ptr<GoapNode> currentNode = openSet.top();
             openSet.pop();
 
-            if (currentNode->currentGoal.empty())
+            if (currentNode->currentGoal.properties.empty())
             {
                 std::vector<std::unique_ptr<BaseAction>> plan;
                 std::shared_ptr<GoapNode> pathNode = currentNode;
@@ -169,14 +167,14 @@ namespace SAGOAP
         template<typename T>
         void Set(AgentState& state, T value)
         {
-            state[std::type_index(typeid(T))] = std::move(value);
+            state.properties[std::type_index(typeid(T))] = std::move(value);
         }
 
         template<typename T>
         const T* Get(const AgentState& state)
         {
-            auto it = state.find(std::type_index(typeid(T)));
-            if (it != state.end())
+            auto it = state.properties.find(std::type_index(typeid(T)));
+            if (it != state.properties.end())
             {
                 return std::any_cast<T>(&(it->second));
             }
@@ -186,8 +184,8 @@ namespace SAGOAP
         template<typename T>
         T* GetMutable(AgentState& state)
         {
-            auto it = state.find(std::type_index(typeid(T)));
-            if (it != state.end())
+            auto it = state.properties.find(std::type_index(typeid(T)));
+            if (it != state.properties.end())
             {
                 return std::any_cast<T>(&(it->second));
             }

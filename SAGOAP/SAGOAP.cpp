@@ -77,19 +77,19 @@ namespace SAGOAP
         AgentState CombineStates(const AgentState& base, const AgentState& delta, const StateTypeRegistry& registry)
         {
             AgentState new_state = base;
-            for (const auto& [type, delta_prop] : delta)
+            for (const auto& [type, delta_prop] : delta.properties)
             {
                 const auto* funcs = registry.GetFunctions(type);
                 if (!funcs || !funcs->add) continue;
 
-                auto it = new_state.find(type);
-                if (it != new_state.end())
+                auto it = new_state.properties.find(type);
+                if (it != new_state.properties.end())
                 {
                     it->second = funcs->add(it->second, delta_prop);
                 }
                 else
                 {
-                    new_state[type] = delta_prop;
+                    new_state.properties[type] = delta_prop;
                 }
             }
             return new_state;
@@ -98,20 +98,20 @@ namespace SAGOAP
         AgentState SubtractStates(const AgentState& base, const AgentState& to_subtract, const StateTypeRegistry& registry)
         {
             AgentState new_state = base;
-            for (const auto& [type, sub_prop] : to_subtract)
+            for (const auto& [type, sub_prop] : to_subtract.properties)
             {
                 const auto* funcs = registry.GetFunctions(type);
                 if (!funcs || !funcs->subtract) continue;
 
-                auto it = new_state.find(type);
-                if (it != new_state.end())
+                auto it = new_state.properties.find(type);
+                if (it != new_state.properties.end())
                 {
                     // Apply the subtraction
                     it->second = funcs->subtract(it->second, sub_prop);
                     // Check if the property became empty and should be removed
                     if (funcs->is_empty && funcs->is_empty(it->second))
                     {
-                        new_state.erase(it);
+                        new_state.properties.erase(it);
                     }
                 }
             }
@@ -122,7 +122,7 @@ namespace SAGOAP
         {
             size_t seed = 0;
             // Note: std::map is ordered, so iterating gives a consistent hash.
-            for (const auto& [type, prop] : state)
+            for (const auto& [type, prop] : state.properties)
             {
                 const auto* funcs = registry.GetFunctions(type);
                 size_t prop_hash = 0;
@@ -138,19 +138,19 @@ namespace SAGOAP
 
         std::string DebugToString(const AgentState& state, const StateTypeRegistry& registry)
         {
-            if (state.empty()) {
+            if (state.properties.empty()) {
                 return "{}";
             }
 
             std::string s = "{ ";
-            for (auto it = state.begin(); it != state.end(); ++it) {
+            for (auto it = state.properties.begin(); it != state.properties.end(); ++it) {
                 const auto* funcs = registry.GetFunctions(it->first);
                 if (funcs && funcs->to_string) {
                     s += funcs->to_string(it->second);
                 } else {
                     s += "[" + std::string(it->first.name()) + ": (no toString registered)]";
                 }
-                if (std::next(it) != state.end()) {
+                if (std::next(it) != state.properties.end()) {
                     s += ", ";
                 }
             }
@@ -158,7 +158,20 @@ namespace SAGOAP
             return s;
         }
     } // namespace Utils
+
+    namespace Debug
+    {
+        void SetRegistryForVisualization(const StateTypeRegistry* registry)
+        {
+            g_pDebugRegistry = registry;
+        }
+    }
 } // namespace SAGOAP
+
+// This pragma tells the Microsoft linker to ensure that the symbol for
+// GetAgentStateDebugString is included in the final executable, even if
+// it appears unreferenced. The name needs to match the C-style name.
+#pragma comment(linker, "/include:GetAgentStateDebugString")
 
 const char* GetAgentStateDebugString(const SAGOAP::AgentState* state)
 {
