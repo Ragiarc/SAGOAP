@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+
+    <!-- =================================================================== -->
+    <!--  Generic Visualizer for AgentState                                  -->
+    <!-- =================================================================== -->
+    <Type Name="SAGOAP::AgentState">
+        <!-- Call our C-style helper function to get the display string! -->
+        <DisplayString>{GetAgentStateDebugString(this),s8}</DisplayString>
+        <!-- We can still let the user expand the raw map if they want. -->
+        <Expand>
+            <ExpandedItem>_Mypair._Myval2._Myhead</ExpandedItem>
+        </Expand>
+    </Type>
+
+    <!-- =================================================================== -->
+    <!--  Generic Visualizer for BaseAction Pointers                       -->
+    <!-- =================================================================== -->
+    <Type Name="SAGOAP::BaseAction *">
+        <!-- We can still use the virtual GetName() directly -->
+        <DisplayString>{(*($T1*)this)->GetName(),s8} (Cost: {(*($T1*)this)->GetCost()})</DisplayString>
+        <Expand>
+            <!-- Display requirements and results using our helper function -->
+            <Item Name="Requirements">{GetAgentStateDebugString(&amp;requirements),s8}</Item>
+            <Item Name="Results">{GetAgentStateDebugString(&amp;results),s8}</Item>
+            <!-- And allow expanding the raw object -->
+            <ExpandedItem>(*($T1*)this)</ExpandedItem>
+        </Expand>
+    </Type>
+
+    <Type Name="std::unique_ptr<SAGOAP::BaseAction,std::default_delete<SAGOAP::BaseAction>>">
+        <DisplayString>{_Mypair._Myval2->GetName(),s8} (Cost: {_Mypair._Myval2->GetCost()})</DisplayString>
+        <Expand>
+            <Item Name="Requirements">{GetAgentStateDebugString(&amp;(_Mypair._Myval2->requirements)),s8}</Item>
+            <Item Name="Results">{GetAgentStateDebugString(&amp;(_Mypair._Myval2->results)),s8}</Item>
+            <ExpandedItem>_Mypair._Myval2</ExpandedItem>
+        </Expand>
+    </Type>
+
+</AutoVisualizer>

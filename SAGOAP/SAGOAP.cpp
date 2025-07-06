@@ -1,7 +1,6 @@
 #include "SAGOAP.h"
-#include <queue>
-#include <unordered_set>
 #include <algorithm> // for std::reverse
+
 
 namespace SAGOAP
 {
@@ -14,6 +13,14 @@ namespace SAGOAP
         return it != registry.end() ? &it->second : nullptr;
     }
 
+    // A global pointer for debugger access ONLY.
+    // This is not thread-safe and should only be used for debugging sessions.
+    const StateTypeRegistry* g_pDebugRegistry = nullptr;
+
+    // A static buffer to hold the string for the debugger.
+    // The debugger will read from this before it's overwritten.
+    thread_local char g_DebugStringBuffer[4096];
+
     // =============================================================================
     // Base Action
     // =============================================================================
@@ -21,6 +28,14 @@ namespace SAGOAP
     {
         requirements = GenerateRequirements(currentState, goal);
         results = GenerateResults(currentState, goal);
+    }
+
+    std::string BaseAction::DebugToString(const StateTypeRegistry& registry) const
+    {
+        std::string s = "ACTION: " + GetName();
+        s += "  - Requirements: " + Utils::DebugToString(requirements, registry) + "\n";
+        s += "  - Results:      " + Utils::DebugToString(results, registry);
+        return s;
     }
 
     // =============================================================================
@@ -120,8 +135,46 @@ namespace SAGOAP
             }
             return seed;
         }
+
+        std::string DebugToString(const AgentState& state, const StateTypeRegistry& registry)
+        {
+            if (state.empty()) {
+                return "{}";
+            }
+
+            std::string s = "{ ";
+            for (auto it = state.begin(); it != state.end(); ++it) {
+                const auto* funcs = registry.GetFunctions(it->first);
+                if (funcs && funcs->to_string) {
+                    s += funcs->to_string(it->second);
+                } else {
+                    s += "[" + std::string(it->first.name()) + ": (no toString registered)]";
+                }
+                if (std::next(it) != state.end()) {
+                    s += ", ";
+                }
+            }
+            s += " }";
+            return s;
+        }
     } // namespace Utils
 } // namespace SAGOAP
+
+const char* GetAgentStateDebugString(const SAGOAP::AgentState* state)
+{
+    if (!state || !SAGOAP::g_pDebugRegistry) {
+        strcpy_s(SAGOAP::g_DebugStringBuffer, "(no state or registry)");
+        return SAGOAP::g_DebugStringBuffer;
+    }
+
+    // Use our existing utility function!
+    std::string str = SAGOAP::Utils::DebugToString(*state, *SAGOAP::g_pDebugRegistry);
+    
+    // Copy the result into the global buffer for the debugger to read.
+    strcpy_s(SAGOAP::g_DebugStringBuffer, str.c_str());
+
+    return SAGOAP::g_DebugStringBuffer;
+}
 
 
 

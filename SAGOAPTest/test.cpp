@@ -16,6 +16,8 @@ struct LocationState
 	void SubtractValues(const LocationState& other) { if (name == other.name) name.clear(); }
 	size_t GetHash() const { return std::hash<std::string>()(name); }
 	bool IsEmpty() const { return name.empty(); }
+
+	std::string ToString() const { return "Location(" + name + ")"; }
 };
 
 struct InventoryState
@@ -47,6 +49,16 @@ struct InventoryState
 		return seed;
 	}
 	bool IsEmpty() const { return items.empty(); }
+
+	std::string ToString() const {
+		if (items.empty()) return "Inventory{}";
+		std::string s = "Inventory{ ";
+		for (const auto& [item, quant] : items) {
+			s += item + ":" + std::to_string(quant) + " ";
+		}
+		s += "}";
+		return s;
+	}
 };
 
 struct Recipe {
@@ -58,6 +70,7 @@ struct Recipe {
 	InventoryState products;
 	// The location required for the craft (e.g., "Forge")
 	std::string location;
+	std::string ToString() const {return "";};
 };
 
 struct KnownRecipesState {
@@ -68,6 +81,7 @@ struct KnownRecipesState {
 	void SubtractValues(const KnownRecipesState&) { /* Can't subtract recipes in this model */ }
 	size_t GetHash() const { return recipes.size(); /* Simple hash for testing */ }
 	bool IsEmpty() const { return recipes.empty(); }
+	std::string ToString() const {return "";}
 };
 
 // =============================================================================
@@ -77,13 +91,17 @@ struct KnownRecipesState {
 class CraftAction : public BaseAction {
 private:
     // This action instance, once configured, will represent one specific recipe.
-    // std::optional is perfect for state that is set after construction.
     std::optional<Recipe> chosenRecipe;
 
 public:
     // Now default-constructible!
     CraftAction() = default;
 
+	std::string GetName() const override
+	{
+		return "CraftAction";
+	}
+	
     float GetCost() const override { return 1.0f; }
 
     std::unique_ptr<BaseAction> Clone() const override {
@@ -154,6 +172,8 @@ public:
         Set(results, delta);
         return results;
     }
+
+	
 };
 
 class MoveToAction : public BaseAction {
@@ -161,6 +181,8 @@ public:
 	std::string targetLocationName; // Configured at runtime
 	float cost = 1.0f;
 
+	std::string GetName() const override { return "MoveToAction"; }
+	
 	bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
 		const auto* currentLoc = Get<LocationState>(currentState);
 		const auto* goalLoc = Get<LocationState>(goal);
@@ -198,6 +220,10 @@ public:
 
 class GetKeyInKeyRoomAction : public BaseAction {
 public:
+	std::string GetName() const override
+	{
+		return "GetKeyInRoom";
+	}
 	float GetCost() const override { return 1.0f; }
 
 	bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
@@ -231,6 +257,11 @@ public:
 
 class PickupIronOreAction : public BaseAction { 
 public:
+	std::string GetName() const override
+	{
+		return "PickUpIronOreAction";
+	}
+	
 	float GetCost() const override { return 1.0f; }
 	bool IsRelevant(const AgentState&, const Goal& goal) const override {
 		const auto* invGoal = Get<InventoryState>(goal); return invGoal && invGoal->items.count("IronOre");

@@ -43,6 +43,11 @@ namespace SAGOAP
             return std::any_cast<const T>(&prop)->IsEmpty(); // User's type MUST have this method.
         };
 
+        // to_string
+        functions.to_string = [](const StateProperty& prop) -> std::string {
+            return std::any_cast<const T>(&prop)->ToString();
+        };
+
         registry[type] = functions;
     }
 
@@ -83,6 +88,8 @@ namespace SAGOAP
         const ActionGeneratorType& actionGenerator,
         const StateTypeRegistry& registry)
     {
+        g_pDebugRegistry = registry;
+        
         // A helper function for hashing state-goal pairs inside the planner
         auto computeStateGoalHash = [&](const AgentState& state, const Goal& goal) -> size_t {
             size_t h1 = Utils::GetStateHash(state, registry);

@@ -11,6 +11,7 @@
 
 namespace SAGOAP
 {
+	
 	// A type-erased container for a single piece of state data.
 	using StateProperty = std::any;
 
@@ -19,6 +20,10 @@ namespace SAGOAP
 
 	// Forward declaration for the planner
 	class StateTypeRegistry;
+
+	// Declaration for the debug-only global pointer to the last used registry.
+	// The `extern` keyword tells the compiler this is defined in another file.
+	extern const StateTypeRegistry* g_pDebugRegistry;
 
 	// A Goal is a partial AgentState. The planner's job is to make the current state
 	// match the goal state.
@@ -32,6 +37,7 @@ namespace SAGOAP
 		std::function<StateProperty(const StateProperty&, const StateProperty&)> subtract;
 		std::function<size_t(const StateProperty&)> get_hash;
 		std::function<bool(const StateProperty&)> is_empty;
+		std::function<std::string(const StateProperty&)> to_string;
 	};
 
 	// The registry holds the function pointers for all user-defined state types.
@@ -61,14 +67,16 @@ namespace SAGOAP
 		AgentState requirements;
 		AgentState results;
 
+		// Override this to give their action a name for debugging.
+		virtual std::string GetName() const = 0;
+		
 		// Is this action a candidate to help satisfy the given goal?
 		virtual bool IsRelevant(const AgentState& currentState, const Goal& goal) const = 0;
 
 		// Populate the requirements and results based on the goal.
 		void Configure(const AgentState& currentState, const Goal& goal);
 		
-
-		// Sub-classes must implement these to be called by Configure.
+		// Implement these to be called by Configure.
 		virtual AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) = 0;
 		virtual AgentState GenerateResults(const AgentState& currentState, const Goal& goal) = 0;
 
@@ -77,6 +85,9 @@ namespace SAGOAP
 
 		// Get the cost of performing this action.
 		virtual float GetCost() const = 0;
+
+		// To String method for Debugging
+		std::string DebugToString(const StateTypeRegistry& registry) const;
 	};
 
 	template <typename... ActionTypes>
@@ -155,7 +166,24 @@ namespace SAGOAP
 
 		// Hashing for AgentState
 		size_t GetStateHash(const AgentState& state, const StateTypeRegistry& registry);
+
+		// ToString for Debugging
+		std::string DebugToString(const AgentState& state, const StateTypeRegistry& registry);
 	} // namespace Utils
 }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+	// This is the function the debugger will call.
+	// It takes a pointer to an AgentState and returns a temporary string buffer.
+	// We make it __declspec(dllexport) to ensure it's visible.
+	__declspec(dllexport) const char* GetAgentStateDebugString(const SAGOAP::AgentState* state);
+
+#ifdef __cplusplus
+}
+#endif
+
 // --- Template Implementations ---
 #include "SAGOAP.inl"
