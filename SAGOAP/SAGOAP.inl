@@ -88,11 +88,9 @@ namespace SAGOAP
         const ActionGeneratorType& actionGenerator,
         const StateTypeRegistry& registry)
     {
-        // A helper function for hashing state-goal pairs inside the planner
-        auto computeStateGoalHash = [&](const AgentState& state, const Goal& goal) -> size_t {
-            size_t h1 = Utils::GetStateHash(state, registry);
-            size_t h2 = Utils::GetStateHash(goal, registry);
-            return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+        // A helper function for hashing goals inside the planner.
+        auto computeGoalHash = [&](const Goal& goal) -> size_t {
+            return Utils::GetStateHash(goal, registry);
         };
         
         std::priority_queue<std::shared_ptr<GoapNode>, std::vector<std::shared_ptr<GoapNode>>, CompareGoapNodes> openSet;
@@ -110,7 +108,9 @@ namespace SAGOAP
             std::shared_ptr<GoapNode> currentNode = openSet.top();
             openSet.pop();
 
-            if (currentNode->currentGoal.properties.empty())
+            // Check for success
+            Goal remainingGoal = Utils::SubtractStates(currentNode->currentGoal, initialCurrentState, registry);
+            if (remainingGoal.properties.empty())
             {
                 std::vector<std::unique_ptr<BaseAction>> plan;
                 std::shared_ptr<GoapNode> pathNode = currentNode;
@@ -119,34 +119,34 @@ namespace SAGOAP
                     plan.push_back(pathNode->action->Clone());
                     pathNode = pathNode->parent;
                 }
+                
                 //std::reverse(plan.begin(), plan.end());
                 return plan;
             }
 
-            size_t currentHash = computeStateGoalHash(currentNode->currentState, currentNode->currentGoal);
+            size_t currentHash = computeGoalHash(currentNode->currentGoal);
             if (closedSet.count(currentHash))
             {
                 continue;
             }
             closedSet.insert(currentHash);
 
-            auto potentialActions = actionGenerator.GenerateActions(currentNode->currentState, currentNode->currentGoal);
+            auto potentialActions = actionGenerator.GenerateActions(initialCurrentState, remainingGoal);
 
             for (auto& action : potentialActions)
             {
                 if (!action) continue;
 
-                AgentState nextState = Utils::CombineStates(currentNode->currentState, action->results, registry);
                 Goal tempGoal = Utils::SubtractStates(currentNode->currentGoal, action->results, registry);
                 Goal nextGoal = Utils::CombineStates(tempGoal, action->requirements, registry);
 
-                size_t nextHash = computeStateGoalHash(nextState, nextGoal);
+                size_t nextHash = computeGoalHash(nextGoal);
                 if (closedSet.count(nextHash))
                 {
                     continue;
                 }
                 
-                auto neighborNode = std::make_shared<GoapNode>(std::move(nextState), std::move(nextGoal));
+                auto neighborNode = std::make_shared<GoapNode>(AgentState(initialCurrentState), std::move(nextGoal));
                 neighborNode->parent = currentNode;
                 neighborNode->action = std::move(action);
                 neighborNode->gCost = currentNode->gCost + neighborNode->action->GetCost();

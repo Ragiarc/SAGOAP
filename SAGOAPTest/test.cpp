@@ -20,6 +20,50 @@ struct LocationState
 	std::string ToString() const { return "Location(" + name + ")"; }
 };
 
+// Represents the agent's belief about a single resource in the world.
+struct WorldItemInfo {
+	std::string location;
+	int quantity;
+	std::string ToString() const { return "Location(" + location + ")" + " Quantity(" + std::to_string(quantity) + ")"; }
+};
+
+// Represents the agent's entire belief system about where world resources are.
+struct WorldResourceState {
+	std::map<std::string, WorldItemInfo> resources;
+
+	// AddValues handles deltas. A delta can contain negative quantities.
+	void AddValues(const WorldResourceState& other) {
+		for (const auto& [item_name, item_info_delta] : other.resources) {
+			auto it = resources.find(item_name);
+			if (it != resources.end()) {
+				it->second.quantity += item_info_delta.quantity;
+				if (it->second.quantity <= 0) {
+					resources.erase(it);
+				}
+			} else {
+				// If the base state doesn't know about this item, just add the delta info
+				// This would happen if an action reveals a new resource location.
+				resources[item_name] = item_info_delta;
+			}
+		}
+	}
+    
+	// For this model, subtracting doesn't make logical sense, so it's a no-op.
+	void SubtractValues(const WorldResourceState&) {}
+    
+	size_t GetHash() const { return resources.size(); }
+	bool IsEmpty() const { return resources.empty(); }
+	std::string ToString() const
+	{
+		std::string result = "{";
+		for (const auto& [key, value] : resources)
+		{
+			result += key + ":" + value.ToString() + ";\n";
+		}
+		return result + "}";
+	}
+};
+
 struct InventoryState
 {
 	std::map<std::string, int> items;
@@ -32,13 +76,24 @@ struct InventoryState
 			}
 		}
 	}
-	void SubtractValues(const InventoryState& other) {
-		// Subtracting is the same as adding a negative delta
-		InventoryState negative_delta;
-		for (const auto& [item, quant] : other.items) {
-			negative_delta.items[item] = -quant;
+	void SubtractValues(const InventoryState& other_delta) {
+		// "other_delta" is the action's results.
+		// We only want to subtract from items that are already part of our goal state.
+		for (const auto& [item_name, delta_quant] : other_delta.items) {
+        
+			auto goal_item_it = this->items.find(item_name);
+
+			// If the action's result affects an item that is in our goal...
+			if (goal_item_it != this->items.end()) {
+				// ...subtract the result's contribution from our goal.
+				goal_item_it->second -= delta_quant;
+
+				// If the goal for this specific item is now met (or exceeded), remove it.
+				if (goal_item_it->second <= 0) {
+					this->items.erase(goal_item_it);
+				}
+			}
 		}
-		AddValues(negative_delta);
 	}
 	size_t GetHash() const {
 		size_t seed = 0;
@@ -87,6 +142,99 @@ struct KnownRecipesState {
 // =============================================================================
 // 2. DEFINE USER-SPECIFIC ACTIONS
 // =============================================================================
+
+class AddItemToInventoryAction : public BaseAction {
+private:
+    // These are configured at runtime based on the goal and agent's knowledge
+    std::string itemToGet;
+    std::string itemLocation;
+    int quantityToGet = 1;
+
+public:
+    AddItemToInventoryAction() = default;
+
+	std::string GetName() const override
+	{
+		return "Add " + std::to_string(quantityToGet) + " " + itemToGet + " to inventory";
+	}
+	
+    float GetCost() const override { return 1.0f; }
+
+    std::unique_ptr<BaseAction> Clone() const override {
+        auto clone = std::make_unique<AddItemToInventoryAction>();
+        clone->itemToGet = this->itemToGet;
+        clone->itemLocation = this->itemLocation;
+        clone->quantityToGet = this->quantityToGet;
+        clone->requirements = this->requirements;
+        clone->results = this->results;
+        return clone;
+    }
+
+    bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
+        const auto* invGoal = Get<InventoryState>(goal);
+        const auto* worldResources = Get<WorldResourceState>(currentState);
+
+        if (!invGoal || !worldResources) return false;
+
+        for (const auto& [goal_item, goal_quant] : invGoal->items) {
+            const auto* currentInv = Get<InventoryState>(currentState);
+            int current_quant = (currentInv && currentInv->items.count(goal_item)) ? currentInv->items.at(goal_item) : 0;
+
+            // Is relevant if we need an item...
+            if (current_quant < goal_quant) {
+                // ...and we know where to find it.
+                if (worldResources->resources.count(goal_item) && worldResources->resources.at(goal_item).quantity > 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
+        const auto* invGoal = Get<InventoryState>(goal);
+        const auto* worldResources = Get<WorldResourceState>(currentState);
+        
+        if (!invGoal || !worldResources) return {};
+
+        for (const auto& [goal_item, goal_quant] : invGoal->items) {
+            const auto* currentInv = Get<InventoryState>(currentState);
+            int current_quant = (currentInv && currentInv->items.count(goal_item)) ? currentInv->items.at(goal_item) : 0;
+            
+            if (current_quant < goal_quant && worldResources->resources.count(goal_item)) {
+                const auto& item_info = worldResources->resources.at(goal_item);
+                if (item_info.quantity > 0) {
+                    // Configure this action instance for this specific item.
+                    this->itemToGet = goal_item;
+                    this->itemLocation = item_info.location;
+                    this->quantityToGet = goal_quant - current_quant;
+                    
+                    AgentState reqs;
+                    Set(reqs, LocationState{this->itemLocation});
+                    return reqs;
+                }
+            }
+        }
+        return {};
+    }
+
+    AgentState GenerateResults(const AgentState&, const Goal&) override {
+        if (itemToGet.empty()) return {};
+
+        AgentState results_delta;
+
+        // 1. Result: Item is added to inventory.
+        Set(results_delta, InventoryState{{{this->itemToGet, this->quantityToGet}}});
+
+        // 2. Result: Agent's belief about the world is updated. The resource is depleted.
+        WorldResourceState belief_delta;
+        belief_delta.resources[this->itemToGet] = WorldItemInfo{this->itemLocation, -this->quantityToGet};
+        Set(results_delta, belief_delta);
+        
+        return results_delta;
+    }
+};
+
 
 class CraftAction : public BaseAction {
 private:
@@ -165,8 +313,14 @@ public:
         if (!chosenRecipe) return {};
 
         InventoryState delta;
-        delta.AddValues(chosenRecipe->products); 
-        delta.SubtractValues(chosenRecipe->ingredients);
+        delta.AddValues(chosenRecipe->products);
+
+		InventoryState consumed_ingredients;
+		for (const auto& [item, quant] : chosenRecipe->ingredients.items) {
+			consumed_ingredients.items[item] = -quant;
+		}
+		
+        delta.SubtractValues(consumed_ingredients);
         
         AgentState results;
         Set(results, delta);
@@ -255,30 +409,6 @@ public:
 	}
 };
 
-class PickupIronOreAction : public BaseAction { 
-public:
-	std::string GetName() const override
-	{
-		return "PickUpIronOreAction";
-	}
-	
-	float GetCost() const override { return 1.0f; }
-	bool IsRelevant(const AgentState&, const Goal& goal) const override {
-		const auto* invGoal = Get<InventoryState>(goal); return invGoal && invGoal->items.count("IronOre");
-	}
-	AgentState GenerateRequirements(const AgentState&, const Goal&) override {
-		AgentState reqs; Set(reqs, LocationState{"Mines"}); return reqs;
-	}
-	AgentState GenerateResults(const AgentState&, const Goal&) override {
-		AgentState res; Set(res, InventoryState{{{"IronOre", 2}}}); return res;
-	}
-	std::unique_ptr<BaseAction> Clone() const override {
-		auto c = std::make_unique<PickupIronOreAction>();
-		c->requirements=this->requirements; c->results=this->results; return c;
-	}
-};
-
-
 
 // =============================================================================
 // TEST FIXTURE
@@ -303,7 +433,6 @@ protected:
 // =============================================================================
 
 TEST_F(SagoapTest, CombineStates_ReplacesLocation) {
-	int a = 5;
     AgentState base;
     Set(base, LocationState{"Start"});
 
@@ -437,33 +566,41 @@ TEST_F(SagoapTest, GoapPlanner_FindsSimplePlan) {
     ASSERT_NE(secondAction, nullptr);
 }
 
-TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithLearnedRecipes) {
-    // --- Define Recipes ---
-    Recipe ironIngotRecipe{/* ... */}; // Same as before
-    Recipe swordRecipe{/* ... */};     // Same as before
-    ironIngotRecipe.ingredients = InventoryState{{{"IronOre", 1}, {"Wood", 1}}};
-    ironIngotRecipe.products = InventoryState{{{"IronIngot", 1}}};
-    ironIngotRecipe.location = "Forge";
-    swordRecipe.ingredients = InventoryState{{{"IronIngot", 2}}};
-    swordRecipe.tools = InventoryState{{{"Hammer", 1}}};
-    swordRecipe.products = InventoryState{{{"Sword", 1}}};
-    swordRecipe.location = "Forge";
+TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithFullyGenericActions) {
+    // --- Register all our custom state types ---
+    registry.RegisterType<KnownRecipesState>();
+    registry.RegisterType<WorldResourceState>();
 
+    // --- Define Recipes (data only) ---
+    Recipe ironIngotRecipe{
+        /* ingredients */ InventoryState{{{"IronOre", 1}, {"Wood", 1}}},
+        /* tools */       InventoryState{},
+        /* products */    InventoryState{{{"IronIngot", 1}}},
+        /* location */    "Forge"
+    };
+    Recipe swordRecipe{
+        /* ingredients */ InventoryState{{{"IronIngot", 2}}},
+        /* tools */       InventoryState{{{"Hammer", 1}}},
+        /* products */    InventoryState{{{"Sword", 1}}},
+        /* location */    "Forge"
+    };
 
-    // --- Set up Initial State (with learned recipes) ---
+    // --- Set up Initial State (agent's full knowledge) ---
     AgentState initialState;
     Set(initialState, LocationState{"Village"});
-    Set(initialState, InventoryState{{{"Hammer", 1}, {"Wood", 1}}});
-    // The agent "knows" these recipes. This could be updated dynamically.
+    Set(initialState, InventoryState{{{"Hammer", 1}, {"Wood", 2}}});
     Set(initialState, KnownRecipesState{{ironIngotRecipe, swordRecipe}});
+    // The agent believes 2 Iron Ore are available at the Mines.
+    Set(initialState, WorldResourceState{{
+        {"IronOre", WorldItemInfo{"Mines", 2}}
+    }});
 
-    // --- Goal is unchanged ---
+    // --- Goal 
     Goal finalGoal;
     Set(finalGoal, InventoryState{{{"Sword", 1}}});
 
-    // --- ActionGenerator is simple again ---
-    // CraftAction is now default-constructible.
-    ActionGenerator<MoveToAction, PickupIronOreAction, CraftAction> actionGenerator;
+    // --- ActionGenerator 
+    ActionGenerator<MoveToAction, CraftAction, AddItemToInventoryAction> actionGenerator;
 
     HeuristicFunction heuristic = [](const AgentState&, const Goal& goal) -> float {
         return static_cast<float>(goal.properties.size());
@@ -476,29 +613,42 @@ TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithLearnedRecipes) {
     ASSERT_FALSE(plan.empty());
     ASSERT_EQ(plan.size(), 5);
 
-    // Step 1 & 2 are unchanged
+    // Step 1: MoveToAction to "Mines"
     MoveToAction* step1 = dynamic_cast<MoveToAction*>(plan[0].get());
     ASSERT_NE(step1, nullptr);
     EXPECT_EQ(step1->targetLocationName, "Mines");
 
-    PickupIronOreAction* step2 = dynamic_cast<PickupIronOreAction*>(plan[1].get());
+    // Step 2: AddItemToInventoryAction (configured for IronOre)
+    AddItemToInventoryAction* step2 = dynamic_cast<AddItemToInventoryAction*>(plan[1].get());
     ASSERT_NE(step2, nullptr);
+    const auto* oreInvResult = Get<InventoryState>(step2->results);
+    const auto* oreWorldResult = Get<WorldResourceState>(step2->results);
+    ASSERT_NE(oreInvResult, nullptr);
+    ASSERT_NE(oreWorldResult, nullptr);
+    EXPECT_EQ(oreInvResult->items.at("IronOre"), 2); // Check inventory gain
+    EXPECT_EQ(oreWorldResult->resources.at("IronOre").quantity, -2); // Check world depletion belief
 
-    // Step 3 is unchanged
+    // Step 3: MoveToAction to "Forge"
     MoveToAction* step3 = dynamic_cast<MoveToAction*>(plan[2].get());
     ASSERT_NE(step3, nullptr);
     EXPECT_EQ(step3->targetLocationName, "Forge");
 
-    // Step 4 & 5 are now generic CraftActions, we verify them by their results
+    // Step 4: CraftAction (configured for Ingots)
     CraftAction* step4 = dynamic_cast<CraftAction*>(plan[3].get());
     ASSERT_NE(step4, nullptr);
     const auto* ingotResult = Get<InventoryState>(step4->results);
     ASSERT_NE(ingotResult, nullptr);
-    EXPECT_TRUE(ingotResult->items.count("IronIngot")); // It's the ingot-crafting action
+    EXPECT_TRUE(ingotResult->items.count("IronIngot"));
 
-    CraftAction* step5 = dynamic_cast<CraftAction*>(plan[4].get());
-    ASSERT_NE(step5, nullptr);
-    const auto* swordResult = Get<InventoryState>(step5->results);
+	// Step 5: CraftAction (configured for ingot)
+	CraftAction* step5 = dynamic_cast<CraftAction*>(plan[4].get());
+	const auto* ingotResult2 = Get<InventoryState>(step5->results);
+	EXPECT_TRUE(ingotResult2->items.count("Sword"));
+	
+    // Step 6: CraftAction (configured for Sword)
+    CraftAction* step6 = dynamic_cast<CraftAction*>(plan[5].get());
+    ASSERT_NE(step6, nullptr);
+    const auto* swordResult = Get<InventoryState>(step6->results);
     ASSERT_NE(swordResult, nullptr);
-    EXPECT_TRUE(swordResult->items.count("Sword")); // It's the sword-crafting action
+    EXPECT_TRUE(swordResult->items.count("Sword"));
 }
