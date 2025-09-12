@@ -67,13 +67,16 @@ namespace SAGOAP
     template <typename... ActionTypes>
     template <typename ActionType>
     void ActionGenerator<ActionTypes...>::CreateActionIfRelevant(
-        const AgentState& currentState, const Goal& goal, std::vector<std::unique_ptr<BaseAction>>& actions) const
+    const AgentState& currentState, const Goal& goal, std::vector<std::unique_ptr<BaseAction>>& actions) const
     {
-        auto action = std::make_unique<ActionType>();
-        if (action->IsRelevant(currentState, goal))
+        // The ActionType class itself is now responsible for generating all relevant instances.
+        auto new_actions = ActionType::GenerateInstances(currentState, goal);
+        if (!new_actions.empty())
         {
-            action->Configure(currentState, goal);
-            actions.push_back(std::move(action));
+            // Move all the newly generated actions into our main list.
+            actions.insert(actions.end(),
+                           std::make_move_iterator(new_actions.begin()),
+                           std::make_move_iterator(new_actions.end()));
         }
     }
 

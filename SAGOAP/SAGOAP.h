@@ -69,11 +69,13 @@ namespace SAGOAP
 		AgentState requirements;
 		AgentState results;
 
+		// static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState&, const Goal&);
+		
 		// Override this to give their action a name for debugging.
 		virtual std::string GetName() const = 0;
 		
 		// Is this action a candidate to help satisfy the given goal?
-		virtual bool IsRelevant(const AgentState& currentState, const Goal& goal) const = 0;
+		//virtual bool IsRelevant(const AgentState& currentState, const Goal& goal) const = 0;
 
 		// Populate the requirements and results based on the goal.
 		void Configure(const AgentState& currentState, const Goal& goal);

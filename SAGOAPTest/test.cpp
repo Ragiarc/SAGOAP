@@ -170,26 +170,39 @@ public:
         return clone;
     }
 
-    bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
-        const auto* invGoal = Get<InventoryState>(goal);
-        const auto* worldResources = Get<WorldResourceState>(currentState);
+	static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const Goal& goal) {
+		std::vector<std::unique_ptr<BaseAction>> instances;
+		const auto* invGoal = Get<InventoryState>(goal);
+		const auto* worldResources = Get<WorldResourceState>(currentState);
 
-        if (!invGoal || !worldResources) return false;
+		if (!invGoal || !worldResources) return instances;
 
-        for (const auto& [goal_item, goal_quant] : invGoal->items) {
-            const auto* currentInv = Get<InventoryState>(currentState);
-            int current_quant = (currentInv && currentInv->items.count(goal_item)) ? currentInv->items.at(goal_item) : 0;
+		for (const auto& [goal_item, goal_quant] : invGoal->items) {
+			const auto* currentInv = Get<InventoryState>(currentState);
+			int current_quant = (currentInv && currentInv->items.count(goal_item)) ? currentInv->items.at(goal_item) : 0;
 
-            // Is relevant if we need an item...
-            if (current_quant < goal_quant) {
-                // ...and we know where to find it.
-                if (worldResources->resources.count(goal_item) && worldResources->resources.at(goal_item).quantity > 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
+			if (current_quant < goal_quant && worldResources->resources.count(goal_item)) {
+				const auto& item_info = worldResources->resources.at(goal_item);
+				if (item_info.quantity > 0) {
+					auto action = std::make_unique<AddItemToInventoryAction>();
+					// Configure this action instance for this specific item.
+					action->itemToGet = goal_item;
+					action->itemLocation = item_info.location;
+					action->quantityToGet = std::min(goal_quant - current_quant, item_info.quantity);
+
+					// Set requirements and results
+					action->requirements = action->GenerateRequirements(currentState, goal);
+					action->results = action->GenerateResults(currentState, goal);
+
+					instances.push_back(std::move(action));
+					// We only generate one "get item" action at a time to keep the search space smaller.
+					// The planner can chain them if it needs more than one type of item.
+					return instances;
+				}
+			}
+		}
+		return instances;
+	}
 
     AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
         const auto* invGoal = Get<InventoryState>(goal);
@@ -218,21 +231,15 @@ public:
         return {};
     }
 
-    AgentState GenerateResults(const AgentState&, const Goal&) override {
-        if (itemToGet.empty()) return {};
-
-        AgentState results_delta;
-
-        // 1. Result: Item is added to inventory.
-        Set(results_delta, InventoryState{{{this->itemToGet, this->quantityToGet}}});
-
-        // 2. Result: Agent's belief about the world is updated. The resource is depleted.
-        WorldResourceState belief_delta;
-        belief_delta.resources[this->itemToGet] = WorldItemInfo{this->itemLocation, -this->quantityToGet};
-        Set(results_delta, belief_delta);
-        
-        return results_delta;
-    }
+	AgentState GenerateResults(const AgentState&, const Goal&) override {
+		if (itemToGet.empty()) return {};
+		AgentState results_delta;
+		Set(results_delta, InventoryState{{{this->itemToGet, this->quantityToGet}}});
+		WorldResourceState belief_delta;
+		belief_delta.resources[this->itemToGet] = WorldItemInfo{this->itemLocation, -this->quantityToGet};
+		Set(results_delta, belief_delta);
+		return results_delta;
+	}
 };
 
 
@@ -261,73 +268,66 @@ public:
         return clone;
     }
 
-    bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
+    static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const Goal& goal) {
+        std::vector<std::unique_ptr<BaseAction>> instances;
         const auto* knownRecipes = Get<KnownRecipesState>(currentState);
         const auto* invGoal = Get<InventoryState>(goal);
 
         if (!knownRecipes || !invGoal) {
-            return false; // Can't craft if we know no recipes or have no inventory goal.
+            return instances;
         }
 
-        // Is there at least one known recipe that can produce an item in the goal?
+        // For EACH known recipe...
         for (const auto& recipe : knownRecipes->recipes) {
+            // ...check if it produces an item that is currently in our goal.
             for (const auto& [productName, quant] : recipe.products.items) {
                 if (invGoal->items.count(productName)) {
-                    return true; // Found a relevant recipe.
-                }
-            }
-        }
-        return false;
-    }
-    
-    AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
-        const auto* knownRecipes = Get<KnownRecipesState>(currentState);
-        const auto* invGoal = Get<InventoryState>(goal);
-        
-        // This should always be true if IsRelevant passed, but check for safety.
-        if (!knownRecipes || !invGoal) return {};
+                    // This recipe is relevant! Create a configured instance for it.
+                    auto action = std::make_unique<CraftAction>();
+                    action->chosenRecipe = recipe; // Pre-configure with this specific recipe
 
-        // Find the first recipe that satisfies the goal and configure this action instance.
-        for (const auto& recipe : knownRecipes->recipes) {
-            for (const auto& [productName, quant] : recipe.products.items) {
-                if (invGoal->items.count(productName)) {
-                    // This is the recipe we will use.
-                    this->chosenRecipe = recipe;
+                    // Now populate the requirements and results based on this recipe
+                    action->requirements = action->GenerateRequirements(currentState, goal);
+                    action->results = action->GenerateResults(currentState, goal);
                     
-                    // Now generate requirements based on this chosen recipe.
-                    AgentState reqs;
-                    Set(reqs, LocationState{this->chosenRecipe->location});
-                    InventoryState allRequiredItems;
-                    allRequiredItems.AddValues(this->chosenRecipe->ingredients);
-                    allRequiredItems.AddValues(this->chosenRecipe->tools);
-                    Set(reqs, allRequiredItems);
-                    return reqs;
+                    instances.push_back(std::move(action));
+                    
+                    // Use a goto to break out of the inner loop once we've created an action
+                    // for this recipe, to avoid creating duplicates if a recipe has multiple
+                    // products that are in the goal.
+                    goto next_recipe;
                 }
             }
+        next_recipe:;
         }
-        return {}; // Should not be reached.
+        return instances;
     }
+	
+    AgentState GenerateRequirements(const AgentState&, const Goal&) override {
+        if (!chosenRecipe) return {}; // Should not happen with the new design
 
+        AgentState reqs;
+        Set(reqs, LocationState{this->chosenRecipe->location});
+        InventoryState allRequiredItems;
+        allRequiredItems.AddValues(this->chosenRecipe->ingredients);
+        allRequiredItems.AddValues(this->chosenRecipe->tools);
+        Set(reqs, allRequiredItems);
+        return reqs;
+    }
+	
     AgentState GenerateResults(const AgentState&, const Goal&) override {
-        // If this action wasn't configured with a recipe, it has no results.
         if (!chosenRecipe) return {};
-
-        InventoryState delta;
-        delta.AddValues(chosenRecipe->products);
-
-		InventoryState consumed_ingredients;
-		for (const auto& [item, quant] : chosenRecipe->ingredients.items) {
-			consumed_ingredients.items[item] = -quant;
-		}
-		
-        delta.SubtractValues(consumed_ingredients);
-        
+        InventoryState results_delta;
+        results_delta.AddValues(chosenRecipe->products);
+        InventoryState consumed_ingredients;
+        for (const auto& [item, quant] : chosenRecipe->ingredients.items) {
+            consumed_ingredients.items[item] = -quant;
+        }
+        results_delta.AddValues(consumed_ingredients);
         AgentState results;
-        Set(results, delta);
+        Set(results, results_delta);
         return results;
     }
-
-	
 };
 
 class MoveToAction : public BaseAction {
@@ -337,13 +337,22 @@ public:
 
 	std::string GetName() const override { return "MoveToAction"; }
 	
-	bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
+	static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const Goal& goal) {
+		std::vector<std::unique_ptr<BaseAction>> instances;
 		const auto* currentLoc = Get<LocationState>(currentState);
 		const auto* goalLoc = Get<LocationState>(goal);
-		if (goalLoc) {
-			return !currentLoc || currentLoc->name != goalLoc->name;
+
+		// Is this action relevant?
+		if (goalLoc && (!currentLoc || currentLoc->name != goalLoc->name)) {
+			auto action = std::make_unique<MoveToAction>();
+			// Configure it
+			action->targetLocationName = goalLoc->name;
+			// Set requirements and results
+			action->requirements = action->GenerateRequirements(currentState, goal);
+			action->results = action->GenerateResults(currentState, goal);
+			instances.push_back(std::move(action));
 		}
-		return false;
+		return instances;
 	}
 
 	AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
@@ -380,13 +389,16 @@ public:
 	}
 	float GetCost() const override { return 1.0f; }
 
-	bool IsRelevant(const AgentState& currentState, const Goal& goal) const override {
-		const auto* goalInv = Get<InventoryState>(goal);
-		if (goalInv && goalInv->items.count("Key")) {
-			const auto* currentInv = Get<InventoryState>(currentState);
-			return !currentInv || !currentInv->items.count("Key");
-		}
-		return false;
+	static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const Goal& goal) {
+		std::vector<std::unique_ptr<BaseAction>> instances;
+
+		auto action = std::make_unique<GetKeyInKeyRoomAction>();
+		// Set requirements and results
+		action->requirements = action->GenerateRequirements(currentState, goal);
+		action->results = action->GenerateResults(currentState, goal);
+		instances.push_back(std::move(action));
+		
+		return instances;
 	}
 
 	AgentState GenerateRequirements(const AgentState& currentState, const Goal&) override {
