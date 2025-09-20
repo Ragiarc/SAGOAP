@@ -134,7 +134,7 @@ namespace SAGOAP
             }
             closedSet.insert(currentHash);
 
-            auto potentialActions = actionGenerator.GenerateActions(initialCurrentState, remainingGoal);
+            auto potentialActions = actionGenerator.GenerateActions(initialCurrentState, currentNode->currentGoal);
 
             for (auto& action : potentialActions)
             {

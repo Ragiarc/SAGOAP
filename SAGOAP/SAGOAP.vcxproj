@@ -159,10 +159,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="SAGOAP.cpp" />
+    <ClCompile Include="SAHGOAP.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SAGOAP.h" />
     <ClInclude Include="SAGOAP.inl" />
+    <ClInclude Include="SAHGOAP.h" />
+    <ClInclude Include="SAHGOAP.inl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -76,22 +76,25 @@ struct InventoryState
 			}
 		}
 	}
-	void SubtractValues(const InventoryState& other_delta) {
-		// "other_delta" is the action's results.
-		// We only want to subtract from items that are already part of our goal state.
-		for (const auto& [item_name, delta_quant] : other_delta.items) {
-        
-			auto goal_item_it = this->items.find(item_name);
+	void SubtractValues(const InventoryState& state_to_subtract) {
+		// This logic now correctly handles both subtracting a world state and an action's results.
+		// We iterate through OUR items (the goal) and see if the other state can satisfy them.
+		for (auto goal_it = this->items.begin(); goal_it != this->items.end(); /* no increment */) {
+			const std::string& goal_item_name = goal_it->first;
+			int& goal_quantity = goal_it->second;
 
-			// If the action's result affects an item that is in our goal...
-			if (goal_item_it != this->items.end()) {
-				// ...subtract the result's contribution from our goal.
-				goal_item_it->second -= delta_quant;
+			// Check if the state we're subtracting has this item
+			auto sub_it = state_to_subtract.items.find(goal_item_name);
+			if (sub_it != state_to_subtract.items.end()) {
+				// It does, so subtract its quantity from our goal quantity.
+				goal_quantity -= sub_it->second;
+			}
 
-				// If the goal for this specific item is now met (or exceeded), remove it.
-				if (goal_item_it->second <= 0) {
-					this->items.erase(goal_item_it);
-				}
+			// If the goal for this item is now met (or exceeded), remove it from the goal.
+			if (goal_quantity <= 0) {
+				goal_it = this->items.erase(goal_it);
+			} else {
+				++goal_it;
 			}
 		}
 	}
@@ -178,6 +181,8 @@ public:
 		if (!invGoal || !worldResources) return instances;
 
 		for (const auto& [goal_item, goal_quant] : invGoal->items) {
+			if (goal_quant <= 0) continue; // Only consider goals for getting items
+
 			const auto* currentInv = Get<InventoryState>(currentState);
 			int current_quant = (currentInv && currentInv->items.count(goal_item)) ? currentInv->items.at(goal_item) : 0;
 
@@ -185,59 +190,48 @@ public:
 				const auto& item_info = worldResources->resources.at(goal_item);
 				if (item_info.quantity > 0) {
 					auto action = std::make_unique<AddItemToInventoryAction>();
-					// Configure this action instance for this specific item.
+                
+					// --- Configure the instance ---
 					action->itemToGet = goal_item;
 					action->itemLocation = item_info.location;
+					// We want to get exactly what the goal asks for, up to what's available
 					action->quantityToGet = std::min(goal_quant - current_quant, item_info.quantity);
+					if (action->quantityToGet <= 0) continue;
 
-					// Set requirements and results
-					action->requirements = action->GenerateRequirements(currentState, goal);
-					action->results = action->GenerateResults(currentState, goal);
+					// --- Set requirements DIRECTLY ---
+					Set(action->requirements, LocationState{action->itemLocation});
+
+					// --- Set results DIRECTLY ---
+					Set(action->results, InventoryState{{{action->itemToGet, action->quantityToGet}}});
+					WorldResourceState belief_delta;
+					belief_delta.resources[action->itemToGet] = WorldItemInfo{action->itemLocation, -action->quantityToGet};
+					Set(action->results, belief_delta);
 
 					instances.push_back(std::move(action));
-					// We only generate one "get item" action at a time to keep the search space smaller.
-					// The planner can chain them if it needs more than one type of item.
-					return instances;
 				}
 			}
 		}
 		return instances;
 	}
 
-    AgentState GenerateRequirements(const AgentState& currentState, const Goal& goal) override {
-        const auto* invGoal = Get<InventoryState>(goal);
-        const auto* worldResources = Get<WorldResourceState>(currentState);
-        
-        if (!invGoal || !worldResources) return {};
-
-        for (const auto& [goal_item, goal_quant] : invGoal->items) {
-            const auto* currentInv = Get<InventoryState>(currentState);
-            int current_quant = (currentInv && currentInv->items.count(goal_item)) ? currentInv->items.at(goal_item) : 0;
-            
-            if (current_quant < goal_quant && worldResources->resources.count(goal_item)) {
-                const auto& item_info = worldResources->resources.at(goal_item);
-                if (item_info.quantity > 0) {
-                    // Configure this action instance for this specific item.
-                    this->itemToGet = goal_item;
-                    this->itemLocation = item_info.location;
-                    this->quantityToGet = goal_quant - current_quant;
-                    
-                    AgentState reqs;
-                    Set(reqs, LocationState{this->itemLocation});
-                    return reqs;
-                }
-            }
-        }
-        return {};
-    }
-
-	AgentState GenerateResults(const AgentState&, const Goal&) override {
+	AgentState GenerateRequirements(const AgentState& /*currentState*/, const Goal& /*goal*/) override {
 		if (itemToGet.empty()) return {};
+    
+		AgentState reqs;
+		Set(reqs, LocationState{this->itemLocation});
+		return reqs;
+	}
+
+	// --- FIX: REMOVE DEPENDENCY ON THE GOAL PARAMETER ---
+	AgentState GenerateResults(const AgentState& /*currentState*/, const Goal& /*goal*/) override {
+		if (itemToGet.empty()) return {};
+
 		AgentState results_delta;
 		Set(results_delta, InventoryState{{{this->itemToGet, this->quantityToGet}}});
 		WorldResourceState belief_delta;
 		belief_delta.resources[this->itemToGet] = WorldItemInfo{this->itemLocation, -this->quantityToGet};
 		Set(results_delta, belief_delta);
+    
 		return results_delta;
 	}
 };
@@ -303,31 +297,35 @@ public:
         return instances;
     }
 	
-    AgentState GenerateRequirements(const AgentState&, const Goal&) override {
-        if (!chosenRecipe) return {}; // Should not happen with the new design
+	AgentState GenerateRequirements(const AgentState& /*currentState*/, const Goal& /*goal*/) override {
+		if (!chosenRecipe) return {};
 
-        AgentState reqs;
-        Set(reqs, LocationState{this->chosenRecipe->location});
-        InventoryState allRequiredItems;
-        allRequiredItems.AddValues(this->chosenRecipe->ingredients);
-        allRequiredItems.AddValues(this->chosenRecipe->tools);
-        Set(reqs, allRequiredItems);
-        return reqs;
-    }
+		AgentState reqs;
+		// Base requirements on the configured recipe, NOT the goal.
+		Set(reqs, LocationState{this->chosenRecipe->location}); 
+		InventoryState allRequiredItems;
+		allRequiredItems.AddValues(this->chosenRecipe->ingredients);
+		allRequiredItems.AddValues(this->chosenRecipe->tools);
+		Set(reqs, allRequiredItems);
+		return reqs;
+	}
 	
-    AgentState GenerateResults(const AgentState&, const Goal&) override {
-        if (!chosenRecipe) return {};
-        InventoryState results_delta;
-        results_delta.AddValues(chosenRecipe->products);
-        InventoryState consumed_ingredients;
-        for (const auto& [item, quant] : chosenRecipe->ingredients.items) {
-            consumed_ingredients.items[item] = -quant;
-        }
-        results_delta.AddValues(consumed_ingredients);
-        AgentState results;
-        Set(results, results_delta);
-        return results;
-    }
+	AgentState GenerateResults(const AgentState& /*currentState*/, const Goal& /*goal*/) override {
+		if (!chosenRecipe) return {};
+
+		// Base results on the configured recipe, NOT the goal.
+		InventoryState results_delta;
+		results_delta.AddValues(chosenRecipe->products);
+		InventoryState consumed_ingredients;
+		for (const auto& [item, quant] : chosenRecipe->ingredients.items) {
+			consumed_ingredients.items[item] = -quant;
+		}
+		results_delta.AddValues(consumed_ingredients);
+    
+		AgentState results;
+		Set(results, results_delta);
+		return results;
+	}
 };
 
 class MoveToAction : public BaseAction {
@@ -623,7 +621,7 @@ TEST_F(SagoapTest, GoapPlanner_CraftsSword_WithFullyGenericActions) {
 
     // --- Verify Plan ---
     ASSERT_FALSE(plan.empty());
-    ASSERT_EQ(plan.size(), 5);
+    ASSERT_EQ(plan.size(), 6);
 
     // Step 1: MoveToAction to "Mines"
     MoveToAction* step1 = dynamic_cast<MoveToAction*>(plan[0].get());

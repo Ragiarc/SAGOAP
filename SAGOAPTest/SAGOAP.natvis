@@ -15,6 +15,17 @@
         </Expand>
     </Type>
 
+    <Type Name="SAHGOAP::AgentState">
+        <!-- Check for the debug registry. If valid, call our helper. -->
+        <DisplayString Condition="(void*)g_pDebugRegistry != 0">{GetAgentStateDebugString2(this),s8}</DisplayString>
+        <!-- Fallback if no registry is set for debugging. -->
+        <DisplayString>State (size={properties._Mypair._Myval2._Mysize}, no registry)</DisplayString>
+        <Expand>
+            <!-- When expanded, just show the underlying map directly. -->
+            <ExpandedItem>properties</ExpandedItem>
+        </Expand>
+    </Type>
+
     <!-- =================================================================== -->
     <!--  Generic Visualizer for BaseAction Pointers                       -->
     <!-- =================================================================== -->
@@ -30,7 +41,30 @@
         </Expand>
     </Type>
 
+    <Type Name="SAHGOAP::BaseAction *">
+        <!-- We can still use the virtual GetName() directly -->
+        <DisplayString>{(*($T1*)this)->GetName(),s8} (Cost: {(*($T1*)this)->GetCost()})</DisplayString>
+        <Expand>
+            <!-- Display requirements and results using our helper function -->
+            <Item Name="Requirements">{GetAgentStateDebugString2(&amp;requirements),s8}</Item>
+            <Item Name="Results">{GetAgentStateDebugString2(&amp;results),s8}</Item>
+            <!-- And allow expanding the raw object -->
+            <ExpandedItem>(*($T1*)this)</ExpandedItem>
+        </Expand>
+    </Type>
+
     <Type Name="std::unique_ptr&lt;SAGOAP::BaseAction,std::default_delete&lt;SAGOAP::BaseAction&gt;&gt;">
+        <!-- 
+            This is the key. It tells the debugger:
+            1. This type behaves like a pointer (Usage="MyPointer").
+            2. The raw pointer value is stored in the member "_Mypair._Myval2".
+            The debugger will then take that raw pointer and AUTOMATICALLY apply
+            the visualizer we defined above for "SAGOAP::BaseAction *".
+        -->
+        <SmartPointer Usage="MyPointer">_Mypair._Myval2</SmartPointer>
+    </Type>
+
+    <Type Name="std::unique_ptr&lt;SAHGOAP::BaseAction,std::default_delete&lt;SAHGOAP::BaseAction&gt;&gt;">
         <!-- 
             This is the key. It tells the debugger:
             1. This type behaves like a pointer (Usage="MyPointer").
