@@ -40,7 +40,6 @@
     <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\$(ProjectName)\</OutDir>
   </PropertyGroup>
   <ItemGroup>
-    <ClCompile Include="test.cpp" />
     <ClCompile Include="testSAHGOAP.cpp" />
     <ClCompile Include="TestStateActionSpaces\SurvivalWorld\Actions\A_Move.cpp" />
     <ClCompile Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SC_DiscreteLocation.cpp" />

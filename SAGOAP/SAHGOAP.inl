@@ -60,11 +60,14 @@ namespace SAHGOAP
     template <typename ActionGeneratorType>
     std::vector<std::unique_ptr<BaseAction>> HierarchicalPlanner::Plan(
         const AgentState& initialState,
-        Goal initialGoal,
+        const AgentState& goalState,
         const StateTypeRegistry& registry,
         const ActionGeneratorType& actionGenerator,
         HeuristicFunction heuristic) const
     {
+        Goal initialTasks;
+        initialTasks.push_back(std::make_unique<AchieveStateTask>(AgentState(goalState)));
+        
         std::priority_queue<std::shared_ptr<PlannerNode>, std::vector<std::shared_ptr<PlannerNode>>, ComparePlannerNodes> openSet;
         std::unordered_set<size_t> closedSet;
 
@@ -79,23 +82,43 @@ namespace SAHGOAP
         
         auto startNode = std::make_shared<PlannerNode>(
             AgentState(initialState),
-            std::move(initialGoal),
-            std::vector<std::unique_ptr<BaseAction>>{}
+            std::move(initialTasks)
         );
         startNode->gCost = 0.0f;
         startNode->hCost = heuristic(startNode->currentState, startNode->tasksRemaining);
         startNode->CalculateFCost();
         openSet.push(startNode);
 
+        auto createDecompositionNode = [&](std::shared_ptr<PlannerNode> parent, Goal&& newTasks) {
+            auto neighborNode = std::make_shared<PlannerNode>(AgentState(parent->currentState), std::move(newTasks));
+            neighborNode->parent = parent;
+            neighborNode->gCost = parent->gCost; // Cost doesn't increase on decomposition
+            neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
+            neighborNode->CalculateFCost();
+            openSet.push(neighborNode);
+        };
+        
         while (!openSet.empty()) {
             std::shared_ptr<PlannerNode> currentNode = openSet.top();
             openSet.pop();
 
             if (currentNode->tasksRemaining.empty()) {
-                return std::move(currentNode->planSoFar);
+                std::vector<std::unique_ptr<BaseAction>> finalPlan;
+                std::shared_ptr<PlannerNode> pathNode = currentNode;
+
+                // Loop until we walk all the way back to the start node (whose parent is null)
+                while (pathNode != nullptr && pathNode->parent != nullptr) {
+                    // If the transition to this node had an action, add it to the plan.
+                    if (pathNode->parentAction) {
+                        finalPlan.push_back(pathNode->parentAction->Clone());
+                    }
+                    pathNode = pathNode->parent;
+                }
+                std::reverse(finalPlan.begin(), finalPlan.end());
+                return finalPlan;
             }
             
-            size_t currentHash = Utils::GetStateHash(currentNode->currentState, registry) ^ (Utils::GetGoalHash(currentNode->tasksRemaining) << 1);
+            size_t currentHash = Utils::GetStateHash(currentNode->currentState, registry) ^ (Utils::GetGoalHash(currentNode->tasksRemaining, registry) << 1);
             if (closedSet.count(currentHash)) {
                 continue;
             }
@@ -115,12 +138,7 @@ namespace SAHGOAP
                 AgentState remainingGoal = Utils::SubtractStates(achieveTask->targetState, currentNode->currentState, registry);
                 if (remainingGoal.properties.empty()) {
                     // This task is already complete, create a new node with the remaining tasks and continue.
-                    auto neighborNode = std::make_shared<PlannerNode>(AgentState(currentNode->currentState), std::move(remainingTasks), clone_plan(currentNode->planSoFar));
-                    neighborNode->parent = currentNode;
-                    neighborNode->gCost = currentNode->gCost;
-                    neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
-                    neighborNode->CalculateFCost();
-                    openSet.push(neighborNode);
+                    createDecompositionNode(currentNode, std::move(remainingTasks));
                     continue;
                 }
 
@@ -151,43 +169,66 @@ namespace SAHGOAP
                     for(auto& task : remainingTasks) decompTasks.push_back(task->Clone());
 
                     // Create a neighbor node that will attempt this decomposition.
-                    auto neighborNode = std::make_shared<PlannerNode>(
-                        AgentState(currentNode->currentState), 
-                        std::move(decompTasks), 
-                        clone_plan(currentNode->planSoFar) // Plan hasn't advanced yet
-                    );
-                    neighborNode->parent = currentNode;
-                    neighborNode->gCost = currentNode->gCost; // Cost doesn't increase until an action is executed
-                    neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
-                    neighborNode->CalculateFCost();
-                    openSet.push(neighborNode);
+                    createDecompositionNode(currentNode, std::move(decompTasks));
                 }
             }
             else if (currentTask->Decompose(currentNode->currentState, registry, subTasks, primitiveAction)) {
+                // This branch handles tasks that are NOT AchieveStateTask.
+                // It can decompose into a primitive action OR a list of sub-tasks.
+                
                 if (primitiveAction) {
+                    
+                    // 1. Get the requirements for this primitive action.
                     AgentState requirements = primitiveAction->GetRequirements(currentNode->currentState);
-                    if (!Utils::IsStateSatisfyingGoal(currentNode->currentState, requirements, registry)) {
-                        continue; // Invalid decomposition, preconditions not met.
+
+                    // 2. Check if the requirements are ALREADY met.
+                    if (Utils::IsStateSatisfyingGoal(currentNode->currentState, requirements, registry)) {
+                        // PRECONDITIONS MET: We can execute this action right now.
+                        // This is the "base case" of the recursion.
+                        
+                        AgentState nextState = Utils::CombineStates(currentNode->currentState, primitiveAction->GetEffects(currentNode->currentState), registry);
+
+                        // Create a neighbor node with the updated state and the remaining tasks.
+                        auto neighborNode = std::make_shared<PlannerNode>(std::move(nextState), std::move(remainingTasks));
+                        neighborNode->parent = currentNode;
+                        neighborNode->parentAction = primitiveAction->Clone();
+                        neighborNode->gCost = currentNode->gCost + primitiveAction->GetCost(currentNode->currentState);
+                        neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
+                        neighborNode->CalculateFCost();
+                        openSet.push(neighborNode);
+
+                    } else {
+                        // PRECONDITIONS NOT MET: We need to create a sub-goal!
+                        // This is the logic that was missing.
+                        
+                        // Create a new task list for the decomposition.
+                        Goal decompTasks;
+                        
+                        // a. Add a task to achieve the unmet requirements.
+                        decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(requirements)));
+                        
+                        // b. Add the original task back so we can try it again later.
+                        decompTasks.push_back(currentTask->Clone());
+                        
+                        // c. Add the rest of the parent's plan.
+                        for (auto& task : remainingTasks) {
+                            decompTasks.push_back(task->Clone());
+                        }
+
+                        // Create a neighbor node that will attempt this new sub-plan.
+                        // The world state and plan-so-far do not change yet.
+                        createDecompositionNode(currentNode, std::move(decompTasks));
+                    }
+                } else {
+                    // The task decomposed into a list of sub-tasks, not a primitive action.
+                    // This is for more complex user-defined tasks.
+                    
+                    // Prepend the new sub-tasks to the list of remaining tasks.
+                    for (auto& task : remainingTasks) {
+                        subTasks.push_back(task->Clone());
                     }
                     
-                    AgentState nextState = Utils::CombineStates(currentNode->currentState, primitiveAction->GetEffects(currentNode->currentState), registry);
-                    auto newPlan = clone_plan(currentNode->planSoFar);
-                    newPlan.push_back(primitiveAction->Clone());
-
-                    auto neighborNode = std::make_shared<PlannerNode>(std::move(nextState), std::move(remainingTasks), std::move(newPlan));
-                    neighborNode->parent = currentNode;
-                    neighborNode->gCost = currentNode->gCost + primitiveAction->GetCost(currentNode->currentState);
-                    neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
-                    neighborNode->CalculateFCost();
-                    openSet.push(neighborNode);
-                } else {
-                    for (auto& task : remainingTasks) subTasks.push_back(task->Clone());
-                    auto neighborNode = std::make_shared<PlannerNode>(AgentState(currentNode->currentState), std::move(subTasks), clone_plan(currentNode->planSoFar));
-                    neighborNode->parent = currentNode;
-                    neighborNode->gCost = currentNode->gCost;
-                    neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
-                    neighborNode->CalculateFCost();
-                    openSet.push(neighborNode);
+                    createDecompositionNode(currentNode, std::move(subTasks));
                 }
             }
         }

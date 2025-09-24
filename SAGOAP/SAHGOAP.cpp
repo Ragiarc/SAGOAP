@@ -45,8 +45,8 @@ namespace SAHGOAP
     // =============================================================================
     // Planner Node Implementation
     // =============================================================================
-    PlannerNode::PlannerNode(AgentState&& state, Goal&& tasks, std::vector<std::unique_ptr<BaseAction>>&& plan)
-        : currentState(std::move(state)), tasksRemaining(std::move(tasks)), planSoFar(std::move(plan)) {}
+    PlannerNode::PlannerNode(AgentState&& state, Goal&& tasks)
+        : currentState(std::move(state)), tasksRemaining(std::move(tasks)), parentAction(nullptr) {}
         
     void PlannerNode::CalculateFCost() { fCost = gCost + hCost; }
     
@@ -78,22 +78,54 @@ namespace SAHGOAP
         }
 
         AgentState SubtractStates(const AgentState& base, const AgentState& to_subtract, const StateTypeRegistry& registry)
-        {
-            AgentState new_state = base;
-            for (const auto& [type, sub_prop] : to_subtract.properties)
-            {
-                const auto* funcs = registry.GetFunctions(type);
-                if (!funcs || !funcs->subtract) continue;
-                auto it = new_state.properties.find(type);
-                if (it != new_state.properties.end()) {
-                    it->second = funcs->subtract(it->second, sub_prop);
-                    if (funcs->is_empty && funcs->is_empty(it->second)) {
-                        new_state.properties.erase(it);
-                    }
-                }
-            }
-            return new_state;
+{
+    // Start with a copy of the base (the goal). We will remove properties from this copy as they are satisfied.
+    AgentState remaining_goal = base;
+
+    // Use an iterator-based loop so we can safely erase elements from the map.
+    for (auto goal_it = remaining_goal.properties.begin(); goal_it != remaining_goal.properties.end(); /* no increment */)
+    {
+        const std::type_index& type = goal_it->first;
+        StateProperty& goal_prop = goal_it->second;
+
+        const auto* funcs = registry.GetFunctions(type);
+        if (!funcs || !funcs->subtract) {
+            // This property type doesn't support subtraction, so we can't determine if it's met.
+            // We'll assume it's not and leave it in the remaining_goal.
+            ++goal_it;
+            continue;
         }
+
+        // Now, check if the state-to-subtract (the current world state) has this same property.
+        auto current_state_it = to_subtract.properties.find(type);
+        if (current_state_it != to_subtract.properties.end())
+        {
+            // Both the goal and the current state have this property. Perform the subtraction.
+            const StateProperty& current_prop = current_state_it->second;
+            goal_prop = funcs->subtract(goal_prop, current_prop); // e.g., LocationState("Forest").SubtractValues(LocationState("Village"))
+
+            // After subtraction, check if the goal property is now "empty" (i.e., satisfied).
+            if (funcs->is_empty && funcs->is_empty(goal_prop))
+            {
+                // It is satisfied, so remove it from the remaining_goal map.
+                // erase() returns the iterator to the next element.
+                goal_it = remaining_goal.properties.erase(goal_it);
+            }
+            else {
+                // The property is not fully satisfied, so leave it and move to the next one.
+                ++goal_it;
+            }
+        }
+        else
+        {
+            // The current state doesn't have this property at all, so it's definitely not satisfied.
+            // Leave it in the remaining_goal and move to the next one.
+            ++goal_it;
+        }
+    }
+
+    return remaining_goal;
+}
 
         bool IsStateSatisfyingGoal(const AgentState& state, const AgentState& goal, const StateTypeRegistry& registry)
         {
@@ -116,10 +148,30 @@ namespace SAHGOAP
             return seed;
         }
         
-        size_t GetGoalHash(const Goal& goal) {
+        size_t GetGoalHash(const Goal& goal, const StateTypeRegistry& registry)
+        {
             size_t seed = 0;
-            for (const auto& task : goal) {
-                 seed ^= std::hash<std::string>()(task->GetName()) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            for (const auto& task : goal)
+            {
+                size_t task_hash = 0;
+
+                // Use dynamic_cast to check if the current task is the special library-provided type.
+                if (const auto* achieveTask = dynamic_cast<const AchieveStateTask*>(task.get()))
+                {
+                    // It IS an AchieveStateTask. We must hash its internal targetState
+                    // to get a unique value for this specific goal.
+                    task_hash = GetStateHash(achieveTask->targetState, registry);
+                }
+                else
+                {
+                    // It is some other user-defined task. The best we can do is fall back
+                    // to hashing its name, assuming the user gives unique names to
+                    // different task types.
+                    task_hash = std::hash<std::string>()(task->GetName());
+                }
+
+                // Combine the hash for this task into the total seed for the goal.
+                seed ^= task_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             }
             return seed;
         }

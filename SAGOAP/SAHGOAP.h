@@ -141,14 +141,14 @@ namespace SAHGOAP
 	{
 		AgentState currentState;
 		Goal tasksRemaining;
-		std::vector<std::unique_ptr<BaseAction>> planSoFar;
+		std::unique_ptr<BaseAction> parentAction;
 
 		float gCost = 0.0f;
 		float hCost = 0.0f;
 		float fCost = 0.0f;
 		std::shared_ptr<PlannerNode> parent = nullptr;
 		
-		PlannerNode(AgentState&& state, Goal&& tasks, std::vector<std::unique_ptr<BaseAction>>&& plan);
+		PlannerNode(AgentState&& state, Goal&& tasks);
 		void CalculateFCost();
 	};
 
@@ -165,7 +165,7 @@ namespace SAHGOAP
 		template <typename ActionGeneratorType>
 		std::vector<std::unique_ptr<BaseAction>> Plan(
 			const AgentState& initialState,
-			Goal initialGoal,
+			const AgentState& goalState,
 			const StateTypeRegistry& registry,
 			const ActionGeneratorType& actionGenerator,
 			HeuristicFunction heuristic) const;
@@ -185,7 +185,7 @@ namespace SAHGOAP
 		bool IsStateSatisfyingGoal(const AgentState& state, const AgentState& goal, const StateTypeRegistry& registry);
 		
 		size_t GetStateHash(const AgentState& state, const StateTypeRegistry& registry);
-		size_t GetGoalHash(const Goal& goal);
+		size_t GetGoalHash(const Goal& goal, const StateTypeRegistry& registry); 
 		std::string DebugToString(const AgentState& state, const StateTypeRegistry& registry);
 	}
 
