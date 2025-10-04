@@ -21,6 +21,7 @@ namespace SAHGOAP
 
 		std::string ToString() const { return "Location(" + name + ")"; }
 	};
+	SAHGOAP_SYMBOLIC_VALUE_TRAIT(LocationState, name);
 
 	// Represents the agent's belief about a single resource in the world.
 	struct WorldItemInfo {
@@ -65,6 +66,11 @@ namespace SAHGOAP
 			return result + "}";
 		}
 	};
+
+	SAHGOAP_BEGIN_COMPLEX_MAP_TRAIT(WorldResourceState, resources, WorldItemInfo)
+		SAHGOAP_COMPLEX_MAP_FIELD_INT(quantity)
+		SAHGOAP_COMPLEX_MAP_FIELD_SYMBOL(location, "location_values") // Links to the main "location" type
+	SAHGOAP_END_COMPLEX_MAP_TRAIT()
 
 	struct InventoryState
 	{
@@ -120,7 +126,8 @@ namespace SAHGOAP
 			return s;
 		}
 	};
-
+	SAHGOAP_SYMBOLIC_MAP_TRAIT(InventoryState, items);
+	
 	struct Recipe {
 		// Things that are consumed
 		InventoryState ingredients;
@@ -153,28 +160,27 @@ namespace SAHGOAP
 	public:
 		MoveToAction(std::string t) : target(std::move(t)) {}
 
-		static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const AgentState& goalState) {
+		static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const ReadOnlyStateView& currentState, const AgentState& goalState) {
 			std::vector<std::unique_ptr<BaseAction>> instances;
-			if (const auto* goalLoc = Get<LocationState>(goalState)) {
-				const auto* currentLoc = Get<LocationState>(currentState);
-				if (!currentLoc || currentLoc->name != goalLoc->name) {
+			if (const auto* goalLoc = SAHGOAP::Utils::Get<LocationState>(goalState)) {
+				auto currentLocName = currentState.GetSymbolicValue("location");
+				if (!currentLocName || *currentLocName != goalLoc->name) {
 					instances.push_back(std::make_unique<MoveToAction>(goalLoc->name));
 				}
 			}
 			return instances;
 		}
     
-		AgentState GetRequirements(const AgentState&) const override
+		AgentState GetRequirements(const ReadOnlyStateView&) const override
 		{
-			AgentState reqs;
-			return reqs;
+			return AgentState{};
 		}
-		AgentState GetEffects(const AgentState&) const override {
+		AgentState GetEffects(const ReadOnlyStateView&) const override {
 			AgentState effects;
 			Set(effects, LocationState{target});
 			return effects;
 		}
-		float GetCost(const AgentState&) const override { return 1.0f; }
+		float GetCost(const ReadOnlyStateView&) const override { return 1.0f; }
 		std::string GetName() const override { return "MoveTo(" + target + ")"; }
 		std::unique_ptr<BaseAction> Clone() const override { return std::make_unique<MoveToAction>(target); }
 	};
@@ -187,34 +193,43 @@ namespace SAHGOAP
 		GetItemAction(std::string name, std::string loc, int quant) 
 			: itemName(name), itemLocation(loc), quantity(quant) {}
 
-		static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const AgentState& goalState) {
+		static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const ReadOnlyStateView& currentState, const AgentState& goalState) {
 			std::vector<std::unique_ptr<BaseAction>> instances;
 			const auto* invGoal = Get<InventoryState>(goalState);
-			const auto* worldState = Get<WorldResourceState>(currentState);
-			if (!invGoal || !worldState) return instances;
+
+			auto worldStateOpt = currentState.GetStateComponent<WorldResourceState>();
+			if (!worldStateOpt) {
+				return instances;
+			}
+
+			if (!invGoal || !worldStateOpt) return instances;
+			
+			const auto& worldState = *worldStateOpt;
+			
+			
         
 			for (const auto& [item_name, goal_quant] : invGoal->items) {
 				if (goal_quant <= 0) continue;
-				auto it = worldState->resources.find(item_name);
-				if (it != worldState->resources.end() && it->second.quantity > 0) {
+				auto it = worldState.resources.find(item_name);
+				if (it != worldState.resources.end() && it->second.quantity > 0) {
 					instances.push_back(std::make_unique<GetItemAction>(item_name, it->second.location, goal_quant));
 				}
 			}
 			return instances;
 		}
 
-		AgentState GetRequirements(const AgentState&) const override {
+		AgentState GetRequirements(const ReadOnlyStateView&) const override {
 			AgentState reqs;
 			Set(reqs, LocationState{itemLocation});
 			return reqs;
 		}
-		AgentState GetEffects(const AgentState&) const override {
+		AgentState GetEffects(const ReadOnlyStateView&) const override {
 			AgentState effects;
 			Set(effects, InventoryState{{{itemName, quantity}}});
 			Set(effects, WorldResourceState{{{itemName, {itemLocation, -quantity}}}});
 			return effects;
 		}
-		float GetCost(const AgentState&) const override { return 1.0f; }
+		float GetCost(const ReadOnlyStateView&) const override { return 1.0f; }
 		std::string GetName() const override { return "Get(" + itemName + ")"; }
 		std::unique_ptr<BaseAction> Clone() const override { return std::make_unique<GetItemAction>(itemName, itemLocation, quantity); }
 	};
@@ -226,7 +241,7 @@ namespace SAHGOAP
 
 		CraftItemAction(const CraftItemAction& other) : recipe(other.recipe) {}
 	
-		static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState& currentState, const AgentState& goalState) {
+		static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const ReadOnlyStateView& currentState, const AgentState& goalState) {
 			std::vector<std::unique_ptr<BaseAction>> instances;
 			const auto* invGoal = Get<InventoryState>(goalState);
 			const auto* knownRecipes = Get<KnownRecipesState>(currentState);
@@ -244,7 +259,7 @@ namespace SAHGOAP
 			return instances;
 		}
 
-		AgentState GetRequirements(const AgentState&) const override {
+		AgentState GetRequirements(const ReadOnlyStateView&) const override {
 			AgentState reqs;
 			Set(reqs, LocationState{recipe.location});
 			InventoryState allRequiredItems;
@@ -253,7 +268,7 @@ namespace SAHGOAP
 			Set(reqs, allRequiredItems);
 			return reqs;
 		}
-		AgentState GetEffects(const AgentState&) const override {
+		AgentState GetEffects(const ReadOnlyStateView&) const override {
 			AgentState effects;
 			InventoryState delta;
 			delta.AddValues(recipe.products);
@@ -265,7 +280,7 @@ namespace SAHGOAP
 			Set(effects, delta);
 			return effects;
 		}
-		float GetCost(const AgentState&) const override { return 1.0f; }
+		float GetCost(const ReadOnlyStateView&) const override { return 1.0f; }
 		std::string GetName() const override { return "Craft(" + recipe.products.items.begin()->first + ")"; }
 		std::unique_ptr<BaseAction> Clone() const override { 
 			return std::make_unique<CraftItemAction>(*this); 

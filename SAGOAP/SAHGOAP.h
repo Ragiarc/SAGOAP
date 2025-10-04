@@ -20,6 +20,50 @@ namespace SAHGOAP
 		std::map<std::type_index, StateProperty> properties;
 	};
 
+	using PlannerState = std::vector<int>;
+
+	// =============================================================================
+	// Schema & Baking System
+	// =============================================================================
+	class WorldSchema; // Fwd declare
+
+	class ReadOnlyStateView
+	{
+	public:
+		ReadOnlyStateView(const PlannerState* state, const WorldSchema* schema);
+		std::optional<std::string_view> GetSymbolicValue(const std::string& typeName) const;
+		std::optional<int> GetMapValue(const std::string& typeName, const std::string& key) const;
+		template<typename T>
+			std::optional<T> GetStateComponent() const;
+	private:
+		const PlannerState* plannerState;
+		const WorldSchema* worldSchema;
+	};
+
+	class TypeSchema; // Fwd declare
+	class WorldSchema
+	{
+	public:
+		template <typename T>
+		void RegisterType(const std::string& name, const std::vector<std::string>& all_possible_symbols);
+		void Finalize();
+		
+		PlannerState BakeState(const AgentState& highLevelState) const;
+		PlannerState BakeGoal(const AgentState& highLevelGoalState) const;
+
+		const TypeSchema* GetTypeSchema(const std::string& name) const;
+		const TypeSchema* GetTypeSchema(std::type_index type) const;
+		const std::vector<std::string>* GetSchemaNamesForType(std::type_index type) const;
+		size_t GetTotalStateSize() const;
+	private:
+		friend struct FieldVisitor; // Allow the helper to call this
+		
+		std::map<std::string, TypeSchema> schemas_by_name;
+		std::map<std::type_index, std::vector<std::string>> schema_names_by_type;
+
+		size_t totalPlannerStateSize = 0;
+	};
+
 	class StateTypeRegistry; // Forward declaration
 	extern const StateTypeRegistry* g_pDebugRegistry;
 
@@ -41,11 +85,7 @@ namespace SAHGOAP
 	private:
 		std::map<std::type_index, StateTypeFunctions> registry;
 	};
-
-	// =============================================================================
-	// Hierarchical Task & Action Representation
-	// =============================================================================
-
+	
 	class BaseAction; // Forward declare
 
 	// A Task is a building block of a plan.
@@ -77,23 +117,53 @@ namespace SAHGOAP
 		// Each Action class must be able to generate all of its relevant, configured instances.
 		// static std::vector<std::unique_ptr<BaseAction>> GenerateInstances(const AgentState&, const AgentState& goalState);
 		
-		virtual AgentState GetRequirements(const AgentState& currentState) const = 0;
-		virtual AgentState GetEffects(const AgentState& currentState) const = 0;
-		virtual float GetCost(const AgentState& currentState) const = 0;
+		virtual AgentState GetRequirements(const ReadOnlyStateView& currentState) const = 0;
+		virtual AgentState GetEffects(const ReadOnlyStateView& currentState) const = 0;
+		virtual float GetCost(const ReadOnlyStateView& currentState) const = 0;
 		virtual std::unique_ptr<BaseAction> Clone() const = 0;
 		virtual std::string GetName() const = 0;
 	};
+	
 
+	// =============================================================================
+	// Hierarchical Forward Planner
+	// =============================================================================
+	struct H_PlannerNode; // Fwd declare
+
+	class H_Planner
+	{
+	public:
+		using HeuristicFunction = std::function<float(const ReadOnlyStateView&, const Goal&)>;
+		
+		H_Planner(const WorldSchema& schema);
+
+		template <typename ActionGeneratorType>
+		std::vector<std::unique_ptr<BaseAction>> Plan(
+			const AgentState& initialState,
+			const AgentState& goalState,
+			const ActionGeneratorType& actionGenerator,
+			HeuristicFunction heuristic) const;
+	private:
+		const WorldSchema& worldSchema;
+	};
+
+	// Helper function for easy access to state properties (no change)
+	namespace Utils {
+		template<typename T>
+		void Set(AgentState& state, T value);
+	}
+
+	
 	// Wraps the user's action types into a single factory.
 	template <typename... ActionTypes>
 	class ActionGenerator
 	{
 	public:
 		std::vector<std::unique_ptr<BaseAction>> GenerateActions(
-			const AgentState& currentState, const AgentState& goal) const;
+			const ReadOnlyStateView& currentState, const AgentState& goal) const;
 	private:
 		template <typename ActionType>
-		void CreateActionIfRelevant(const AgentState& currentState,
+		void CreateActionIfRelevant(const ReadOnlyStateView& currentState,
 									const AgentState& goal,
 									std::vector<std::unique_ptr<BaseAction>>& actions) const;
 	};
@@ -198,5 +268,5 @@ namespace SAHGOAP
 extern "C" {
 	__declspec(dllexport) const char* GetAgentStateDebugString2(const SAHGOAP::AgentState* state);
 }
-
+#include "SAHGOAP_Traits.h"
 #include "SAHGOAP.inl"

@@ -163,6 +163,7 @@
   <ItemGroup>
     <ClInclude Include="SAHGOAP.h" />
     <ClInclude Include="SAHGOAP.inl" />
+    <ClInclude Include="SAHGOAP_Traits.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -4,6 +4,99 @@
 
 namespace SAHGOAP
 {
+    // =============================================================================
+    // WorldSchema Implementation
+    // =============================================================================
+    void WorldSchema::Finalize() {
+        totalPlannerStateSize = 0;
+        // We now iterate through the master map of schemas, which is sorted by name.
+        // This ensures a deterministic layout for the PlannerState.
+        for (auto& pair : schemas_by_name) {
+            TypeSchema& schema = pair.second;
+            schema.plannerStateOffset = totalPlannerStateSize;
+            totalPlannerStateSize += schema.plannerStateSize;
+        }
+    }
+    
+    PlannerState WorldSchema::BakeState(const AgentState& highLevelState) const {
+        PlannerState bakedState(totalPlannerStateSize, 0);
+        
+        for (const auto& [type_idx, prop] : highLevelState.properties) {
+            auto names_it = schema_names_by_type.find(type_idx);
+            if (names_it != schema_names_by_type.end()) {
+                for (const std::string& schema_name : names_it->second) {
+                    const TypeSchema* schema = GetTypeSchema(schema_name);
+                    if (schema && schema->bake) {
+                        schema->bake(prop, bakedState, *this);
+                    }
+                }
+            }
+        }
+        return bakedState;
+    }
+
+    PlannerState WorldSchema::BakeGoal(const AgentState& highLevelGoalState) const {
+        // Initialize the baked state with -1, which signifies "don't care".
+        PlannerState bakedState(totalPlannerStateSize, -1);
+    
+        // The rest of the logic is identical to BakeState.
+        for (const auto& [type_idx, prop] : highLevelGoalState.properties) {
+            auto names_it = schema_names_by_type.find(type_idx);
+            if (names_it != schema_names_by_type.end()) {
+                for (const std::string& schema_name : names_it->second) {
+                    const TypeSchema* schema = GetTypeSchema(schema_name);
+                    if (schema && schema->bake) {
+                        schema->bake(prop, bakedState, *this);
+                    }
+                }
+            }
+        }
+        return bakedState;
+    }
+
+    const TypeSchema* WorldSchema::GetTypeSchema(const std::string& name) const {
+        auto it = schemas_by_name.find(name);
+        return (it != schemas_by_name.end()) ? &it->second : nullptr;
+    }
+    
+    const std::vector<std::string>* WorldSchema::GetSchemaNamesForType(std::type_index type) const {
+        auto it = schema_names_by_type.find(type);
+        return (it != schema_names_by_type.end()) ? &it->second : nullptr;
+    }
+
+    size_t WorldSchema::GetTotalStateSize() const {
+        return totalPlannerStateSize;
+    }
+	
+	// =============================================================================
+    // ReadOnlyStateView Implementation
+    // =============================================================================
+	ReadOnlyStateView::ReadOnlyStateView(const PlannerState* state, const WorldSchema* schema)
+        : plannerState(state), worldSchema(schema) {}
+	
+	std::optional<std::string_view> ReadOnlyStateView::GetSymbolicValue(const std::string& typeName) const {
+		const auto* typeSchema = worldSchema->GetTypeSchema(typeName);
+		if (!typeSchema || typeSchema->plannerStateSize != 1) return std::nullopt;
+		int valueId = (*plannerState)[typeSchema->plannerStateOffset];
+		if (valueId < 0 || valueId >= typeSchema->intToSymbol.size()) return std::nullopt;
+		return typeSchema->intToSymbol[valueId];
+	}
+
+	std::optional<int> ReadOnlyStateView::GetMapValue(const std::string& typeName, const std::string& key) const {
+		const auto* typeSchema = worldSchema->GetTypeSchema(typeName);
+		if (!typeSchema) return std::nullopt;
+		auto it = typeSchema->symbolToInt.find(key);
+		if (it == typeSchema->symbolToInt.end()) return std::nullopt;
+		return (*plannerState)[typeSchema->plannerStateOffset + it->second];
+	}
+
+
+
+    // =============================================================================
+    // H_Planner Constructor
+    // =============================================================================
+    H_Planner::H_Planner(const WorldSchema& schema) : worldSchema(schema) {}
+    
     const StateTypeFunctions* StateTypeRegistry::GetFunctions(std::type_index type) const
     {
         auto it = registry.find(type);

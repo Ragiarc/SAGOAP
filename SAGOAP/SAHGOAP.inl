@@ -5,6 +5,214 @@
 
 namespace SAHGOAP
 {
+class TypeSchema 
+	{
+	public:
+		std::function<void(const StateProperty&, PlannerState&, const WorldSchema&)> bake;
+		size_t plannerStateOffset = 0;
+		size_t plannerStateSize = 0;
+		std::string name;
+		std::map<std::string, int> symbolToInt;
+		std::vector<std::string> intToSymbol;
+	};
+
+	// =============================================================================
+	// WorldSchema Implementation
+	// =============================================================================
+
+	struct FieldVisitor {
+        WorldSchema& worldSchema;
+        const std::string& parentTypeName;
+        const std::type_index parentTypeIndex;
+        const std::vector<std::string>& all_possible_keys;
+
+        template<typename ParentStruct, typename ValueStruct, typename FieldType>
+        void visit(const char* fieldName, FieldType ValueStruct::* memberPtr, const char* symbolicTypeName = nullptr) 
+        {
+            using ParentTrait = Traits::StateTypeTrait<ParentStruct>;
+            std::string sub_schema_name = std::string(parentTypeName) + "_" + fieldName;
+
+            TypeSchema sub_schema;
+            sub_schema.name = sub_schema_name;
+            sub_schema.plannerStateSize = all_possible_keys.size();
+        	
+            for (int i = 0; i < all_possible_keys.size(); ++i) {
+                sub_schema.symbolToInt[all_possible_keys[i]] = i;
+                sub_schema.intToSymbol.push_back(all_possible_keys[i]);
+            }
+
+            // --- Generate baking logic ---
+            sub_schema.bake = [this, memberPtr, symbolicTypeName] (const StateProperty& prop, PlannerState& state, const WorldSchema& ws) {
+                const auto& main_map = ParentTrait::GetMap(std::any_cast<const ParentStruct&>(prop));
+                const TypeSchema* ss = ws.GetTypeSchema(std::string(parentTypeName) + "_" + fieldName);
+                size_t offset = ss->plannerStateOffset;
+                
+                for (const auto& [outer_key, value_struct] : main_map) {
+                    size_t key_id = ss->symbolToInt.at(outer_key);
+                    const auto& field_value = value_struct.*memberPtr;
+
+                    if constexpr (std::is_same_v<FieldType, int>) {
+                        state[offset + key_id] = field_value;
+                    } else if constexpr (std::is_same_v<FieldType, std::string>) {
+                        // Find the schema for the symbolic type (e.g., "location")
+                        const TypeSchema* sym_schema = ws.GetTypeSchema(symbolicTypeName);
+                        state[offset + key_id] = sym_schema->symbolToInt.at(field_value);
+                    }
+                }
+            };
+
+            // Add the sub-schema name to the parent type's lookup list.
+            worldSchema.schema_names_by_type[parentTypeIndex].push_back(sub_schema_name);
+            // Add the sub-schema itself to the main map.
+            worldSchema.schemas_by_name[sub_schema_name] = std::move(sub_schema);
+        }
+    };
+	
+	template <typename T>
+	void WorldSchema::RegisterType(const std::string& name, const std::vector<std::string>& all_possible_symbols)
+	{
+		using Trait = Traits::StateTypeTrait<T>;
+		std::type_index type_idx = typeid(T);
+		TypeSchema schema;
+		schema.name = name;
+		
+		// Use if constexpr to select the right registration logic at compile time
+		
+		if constexpr (std::is_base_of_v<Traits::SymbolicValueTrait<T::name>, Trait> || 
+					  std::is_base_of_v<Traits::SymbolicMapTrait<T::items>, Trait>)
+		{
+			schema.plannerStateSize = 1;
+			schema.intToSymbol.reserve(all_possible_symbols.size());
+			for (int i = 0; i < all_possible_symbols.size(); ++i) {
+				// Set size based on type
+				if constexpr (std::is_base_of_v<Traits::SymbolicValueTrait<T::name>, Trait>) {
+					schema.plannerStateSize = 1;
+				} else {
+					schema.plannerStateSize = all_possible_symbols.size();
+				}
+
+				// Populate the symbol maps for this type
+				for (int i = 0; i < all_possible_symbols.size(); ++i) {
+					schema.symbolToInt[all_possible_symbols[i]] = i;
+					schema.intToSymbol.push_back(all_possible_symbols[i]);
+				}
+				if constexpr (std::is_base_of_v<Traits::SymbolicValueTrait<T::name>, Trait>)
+				{
+					schema.bake = [](const StateProperty& prop, PlannerState& state, const WorldSchema& worldSchema) {
+						const auto* typeSchema = worldSchema.GetTypeSchema(typeid(T));
+						const auto& value_str = Trait::GetValue(std::any_cast<const T&>(prop));
+						state[typeSchema->plannerStateOffset] = typeSchema->symbolToInt.at(value_str);
+					};
+				}
+				else
+				{
+					schema.bake = [](const StateProperty& prop, PlannerState& state, const WorldSchema& worldSchema) {
+						const auto* typeSchema = worldSchema.GetTypeSchema(typeid(T));
+						size_t offset = typeSchema->plannerStateOffset;
+						std::fill_n(state.begin() + offset, typeSchema->plannerStateSize, 0);
+						const auto& item_map = Trait::GetMap(std::any_cast<const T&>(prop));
+						for (const auto& [key, value] : item_map) {
+							state[offset + typeSchema->symbolToInt.at(key)] = value;
+						}
+					};
+				}
+				
+				// Store the link: type T -> schema name
+				schema_names_by_type[type_idx].push_back(name);
+				// Store the schema itself
+				schemas_by_name[name] = std::move(schema);
+			}
+			
+		}
+		else if constexpr (std::is_base_of_v<Traits::ComplexMapTrait, Trait>) {
+			std::type_index parentTypeIndex = typeid(T);
+			FieldVisitor visitor{*this, name, parentTypeIndex, all_possible_symbols};
+    
+			// This call now works. The `ForEachField` implementation generated by the
+			// macros will call the correct specialization of `visitor.visit` with all
+			// the necessary type information.
+			Trait::FieldProvider::ForEachField(visitor);
+		}
+	}
+
+
+
+	// =============================================================================
+	// H_Planner Implementation
+	// =============================================================================
+	struct H_PlannerNode
+	{
+		PlannerState currentPlannerState;
+		Goal tasksRemaining;
+		std::unique_ptr<BaseAction> parentAction;
+
+		float gCost = 0.0f;
+		float hCost = 0.0f;
+		float fCost = 0.0f;
+		std::shared_ptr<H_PlannerNode> parent = nullptr;
+		
+		void CalculateFCost() { fCost = gCost + hCost; }
+	};
+
+	struct Compare_H_PlannerNodes {
+		bool operator()(const std::shared_ptr<H_PlannerNode>& a, const std::shared_ptr<H_PlannerNode>& b) const {
+			if (std::abs(a->fCost - b->fCost) > 1e-6) return a->fCost > b->fCost;
+			return a->hCost > b->hCost;
+		}
+	};
+	
+	template <typename ActionGeneratorType>
+	std::vector<std::unique_ptr<BaseAction>> H_Planner::Plan(
+		const AgentState& initialState,
+		const AgentState& goalState,
+		const ActionGeneratorType& actionGenerator,
+		HeuristicFunction heuristic) const
+	{
+		PlannerState initialPlannerState = worldSchema.BakeState(initialState);
+		
+		Goal initialTasks;
+		initialTasks.push_back(std::make_unique<AchieveStateTask>(goalState));
+		
+		std::priority_queue<std::shared_ptr<H_PlannerNode>, std::vector<std::shared_ptr<H_PlannerNode>>, Compare_H_PlannerNodes> openSet;
+        std::unordered_set<size_t> closedSet; // Hash of PlannerState + Hash of Task List
+		
+		auto startNode = std::make_shared<H_PlannerNode>();
+		startNode->currentPlannerState = initialPlannerState;
+		startNode->tasksRemaining = std::move(initialTasks);
+        startNode->gCost = 0.0f;
+		ReadOnlyStateView startView(&startNode->currentPlannerState, &worldSchema);
+        startNode->hCost = heuristic(startView, startNode->tasksRemaining);
+        startNode->CalculateFCost();
+		openSet.push(startNode);
+
+		while (!openSet.empty()) {
+			auto currentNode = openSet.top();
+			openSet.pop();
+
+			if (currentNode->tasksRemaining.empty()) {
+                std::vector<std::unique_ptr<BaseAction>> finalPlan;
+                auto pathNode = currentNode;
+                while (pathNode != nullptr && pathNode->parent != nullptr) {
+                    if (pathNode->parentAction) {
+                        finalPlan.push_back(pathNode->parentAction->Clone());
+                    }
+                    pathNode = pathNode->parent;
+                }
+                std::reverse(finalPlan.begin(), finalPlan.end());
+                return finalPlan;
+			}
+            
+            // ... (Full A* loop with state views, baking, etc. needs to be implemented here) ...
+            // This is a complex implementation involving hashing PlannerState, cloning tasks,
+            // creating views, calling the generator, baking results, and creating neighbor nodes.
+		}
+
+		return {}; // No plan found
+	}
+
+
+
+    
     template <typename T>
     void StateTypeRegistry::RegisterType()
     {
@@ -36,7 +244,7 @@ namespace SAHGOAP
 
     template <typename... ActionTypes>
     std::vector<std::unique_ptr<BaseAction>> ActionGenerator<ActionTypes...>::GenerateActions(
-        const AgentState& currentState, const AgentState& goal) const
+        const ReadOnlyStateView& currentState, const AgentState& goal) const
     {
         std::vector<std::unique_ptr<BaseAction>> actions;
         (CreateActionIfRelevant<ActionTypes>(currentState, goal, actions), ...);
@@ -45,7 +253,7 @@ namespace SAHGOAP
 
     template <typename... ActionTypes>
     template <typename ActionType>
-    void ActionGenerator<ActionTypes...>::CreateActionIfRelevant(const AgentState& currentState,
+    void ActionGenerator<ActionTypes...>::CreateActionIfRelevant(const ReadOnlyStateView& currentState,
         const AgentState& goal,
         std::vector<std::unique_ptr<BaseAction>>& actions) const
     {
@@ -103,12 +311,10 @@ namespace SAHGOAP
             openSet.pop();
 
             if (currentNode->tasksRemaining.empty()) {
+                // SUCCESS: Reconstruct the plan by walking up the parent pointers.
                 std::vector<std::unique_ptr<BaseAction>> finalPlan;
                 std::shared_ptr<PlannerNode> pathNode = currentNode;
-
-                // Loop until we walk all the way back to the start node (whose parent is null)
                 while (pathNode != nullptr && pathNode->parent != nullptr) {
-                    // If the transition to this node had an action, add it to the plan.
                     if (pathNode->parentAction) {
                         finalPlan.push_back(pathNode->parentAction->Clone());
                     }
