@@ -1,309 +1,175 @@
 #include "SAHGOAP.h"
-#include <algorithm> // for std::reverse
-#include <queue> // For planner
+#include <queue>
+#include <unordered_set>
+#include <algorithm>
+#include <string>
 
 namespace SAHGOAP
 {
     // =============================================================================
-    // WorldSchema Implementation
+    // World Model Implementation
     // =============================================================================
-    void WorldSchema::Finalize() {
-        totalPlannerStateSize = 0;
-        // We now iterate through the master map of schemas, which is sorted by name.
-        // This ensures a deterministic layout for the PlannerState.
-        for (auto& pair : schemas_by_name) {
-            TypeSchema& schema = pair.second;
-            schema.plannerStateOffset = totalPlannerStateSize;
-            totalPlannerStateSize += schema.plannerStateSize;
+
+    void WorldModel::RegisterCondition(const std::string& name, ConditionFunction func) {
+        registered_conditions[name] = std::move(func);
+    }
+
+    void WorldModel::RegisterEffect(const std::string& name, EffectFunction func) {
+        registered_effects[name] = std::move(func);
+    }
+
+    void WorldModel::RegisterActionGenerator(const std::string& name, ActionInstanceGenerator func) {
+        registered_generators[name] = std::move(func);
+    }
+
+    void WorldModel::RegisterSymbol(const std::string& symbol) {
+        if (symbol_to_id.find(symbol) == symbol_to_id.end()) {
+            symbol_to_id[symbol] = next_symbol_id;
+            id_to_symbol[next_symbol_id] = symbol;
+            next_symbol_id++;
         }
     }
+
+    int WorldModel::GetSymbolId(const std::string& symbol) const {
+        auto it = symbol_to_id.find(symbol);
+        if (it != symbol_to_id.end()) {
+            return it->second;
+        }
+        // Consider throwing an error or returning a specific "not found" value
+        return -1;
+    }
+
+    const std::string& WorldModel::GetSymbolName(int symbolId) const {
+        // In a real implementation, add bounds checking.
+        return id_to_symbol[symbolId];
+    }
+
+    const ConditionFunction* WorldModel::GetCondition(const std::string& name) const {
+        auto it = registered_conditions.find(name);
+        return (it != registered_conditions.end()) ? &it->second : nullptr;
+    }
+
+    const EffectFunction* WorldModel::GetEffect(const std::string& name) const {
+        auto it = registered_effects.find(name);
+        return (it != registered_effects.end()) ? &it->second : nullptr;
+    }
     
-    PlannerState WorldSchema::BakeState(const AgentState& highLevelState) const {
-        PlannerState bakedState(totalPlannerStateSize, 0);
+    const ActionInstanceGenerator* WorldModel::GetActionGenerator(const std::string& name) const {
+        auto it = registered_generators.find(name);
+        return (it != registered_generators.end()) ? &it->second : nullptr;
+    }
+
+    // =============================================================================
+    // Planner Internals & Implementation
+    // =============================================================================
+
+    // Helper function to resolve an ActionInstance into an optimized, planner-friendly format.
+    std::optional<ResolvedAction> ResolveAction(const ActionInstance& inst, const WorldModel& model) {
+        ResolvedAction res;
+        res.schema = inst.schema;
+        res.cost = inst.schema->cost;
+
+        auto resolve_params = [&](const std::vector<std::string>& param_strings) -> std::optional<std::vector<int>> {
+            std::vector<int> resolved_params;
+            resolved_params.reserve(param_strings.size());
+            for (const std::string& param_str : param_strings) {
+                if (param_str.empty()) continue;
+                if (param_str[0] == '$') { // Parameter lookup
+                    std::string param_name = param_str.substr(1);
+                    auto it = inst.params.find(param_name);
+                    if (it == inst.params.end()) return std::nullopt; // Failed to find param
+                    resolved_params.push_back(it->second);
+                } else if (param_str[0] == '@') { // Symbol lookup
+                    resolved_params.push_back(model.GetSymbolId(param_str.substr(1)));
+                } else { // Literal integer
+                    resolved_params.push_back(std::stoi(param_str));
+                }
+            }
+            return resolved_params;
+        };
+
+        for (const auto& cond_schema : inst.schema->preconditions) {
+            auto func = model.GetCondition(cond_schema.name);
+            if (!func) return std::nullopt; // A required C++ function wasn't registered
+            
+            auto params = resolve_params(cond_schema.params);
+            if (!params) return std::nullopt; // A parameter name was wrong
+
+            res.resolved_preconditions.push_back({func, std::move(*params), cond_schema.op});
+        }
+        // Similar logic would be needed here to resolve effects into a `resolved_effects` vector.
+
+        return res;
+    }
+
+
+    std::optional<std::vector<ActionInstance>> H_Planner::Plan(
+        const AgentState& initialState,
+        Goal initialGoal,
+        const WorldModel& worldModel,
+        const std::vector<ActionSchema>& allActionSchemas,
+        HeuristicFunction heuristic) const
+    {
+        std::priority_queue<std::shared_ptr<H_PlannerNode>, std::vector<std::shared_ptr<H_PlannerNode>>, internal::ComparePlannerNodes> openSet;
+        std::unordered_set<size_t> closedSet;
         
-        for (const auto& [type_idx, prop] : highLevelState.properties) {
-            auto names_it = schema_names_by_type.find(type_idx);
-            if (names_it != schema_names_by_type.end()) {
-                for (const std::string& schema_name : names_it->second) {
-                    const TypeSchema* schema = GetTypeSchema(schema_name);
-                    if (schema && schema->bake) {
-                        schema->bake(prop, bakedState, *this);
+        auto startNode = std::make_shared<H_PlannerNode>();
+        startNode->currentState = initialState;
+        startNode->tasksRemaining = std::move(initialGoal);
+        startNode->gCost = 0.0f;
+        startNode->hCost = heuristic(startNode->currentState, startNode->tasksRemaining);
+        startNode->CalculateFCost();
+        openSet.push(startNode);
+
+        while (!openSet.empty()) {
+            std::shared_ptr<H_PlannerNode> currentNode = openSet.top();
+            openSet.pop();
+
+            if (currentNode->tasksRemaining.empty()) {
+                // SUCCESS: Reconstruct the plan by walking up the parent pointers.
+                std::vector<ActionInstance> finalPlan;
+                std::shared_ptr<H_PlannerNode> pathNode = currentNode;
+                while (pathNode != nullptr && pathNode->parent != nullptr) {
+                    if (pathNode->parentActionInstance) {
+                        finalPlan.push_back(*pathNode->parentActionInstance);
                     }
+                    pathNode = pathNode->parent;
                 }
+                std::reverse(finalPlan.begin(), finalPlan.end());
+                return finalPlan;
+            }
+            
+            size_t currentHash = currentNode->GetHash();
+            if (closedSet.count(currentHash)) {
+                continue;
+            }
+            closedSet.insert(currentHash);
+
+            auto currentTask = currentNode->tasksRemaining.front()->Clone();
+            Goal remainingTasks;
+            remainingTasks.reserve(currentNode->tasksRemaining.size() - 1);
+            for (size_t i = 1; i < currentNode->tasksRemaining.size(); ++i) {
+                remainingTasks.push_back(currentNode->tasksRemaining[i]->Clone());
+            }
+
+            Goal subTasks;
+            if (currentTask->Decompose(currentNode->currentState, subTasks)) {
+                // Prepend the new sub-tasks to the list of remaining tasks.
+                subTasks.insert(subTasks.end(), 
+                                std::make_move_iterator(remainingTasks.begin()), 
+                                std::make_move_iterator(remainingTasks.end()));
+                
+                auto neighborNode = std::make_shared<H_PlannerNode>();
+                neighborNode->currentState = currentNode->currentState; // State doesn't change on decomposition
+                neighborNode->tasksRemaining = std::move(subTasks);
+                neighborNode->parent = currentNode;
+                neighborNode->gCost = currentNode->gCost;
+                neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
+                neighborNode->CalculateFCost();
+                openSet.push(neighborNode);
             }
         }
-        return bakedState;
-    }
 
-    PlannerState WorldSchema::BakeGoal(const AgentState& highLevelGoalState) const {
-        // Initialize the baked state with -1, which signifies "don't care".
-        PlannerState bakedState(totalPlannerStateSize, -1);
-    
-        // The rest of the logic is identical to BakeState.
-        for (const auto& [type_idx, prop] : highLevelGoalState.properties) {
-            auto names_it = schema_names_by_type.find(type_idx);
-            if (names_it != schema_names_by_type.end()) {
-                for (const std::string& schema_name : names_it->second) {
-                    const TypeSchema* schema = GetTypeSchema(schema_name);
-                    if (schema && schema->bake) {
-                        schema->bake(prop, bakedState, *this);
-                    }
-                }
-            }
-        }
-        return bakedState;
-    }
-
-    const TypeSchema* WorldSchema::GetTypeSchema(const std::string& name) const {
-        auto it = schemas_by_name.find(name);
-        return (it != schemas_by_name.end()) ? &it->second : nullptr;
-    }
-    
-    const std::vector<std::string>* WorldSchema::GetSchemaNamesForType(std::type_index type) const {
-        auto it = schema_names_by_type.find(type);
-        return (it != schema_names_by_type.end()) ? &it->second : nullptr;
-    }
-
-    size_t WorldSchema::GetTotalStateSize() const {
-        return totalPlannerStateSize;
-    }
-	
-	// =============================================================================
-    // ReadOnlyStateView Implementation
-    // =============================================================================
-	ReadOnlyStateView::ReadOnlyStateView(const PlannerState* state, const WorldSchema* schema)
-        : plannerState(state), worldSchema(schema) {}
-	
-	std::optional<std::string_view> ReadOnlyStateView::GetSymbolicValue(const std::string& typeName) const {
-		const auto* typeSchema = worldSchema->GetTypeSchema(typeName);
-		if (!typeSchema || typeSchema->plannerStateSize != 1) return std::nullopt;
-		int valueId = (*plannerState)[typeSchema->plannerStateOffset];
-		if (valueId < 0 || valueId >= typeSchema->intToSymbol.size()) return std::nullopt;
-		return typeSchema->intToSymbol[valueId];
-	}
-
-	std::optional<int> ReadOnlyStateView::GetMapValue(const std::string& typeName, const std::string& key) const {
-		const auto* typeSchema = worldSchema->GetTypeSchema(typeName);
-		if (!typeSchema) return std::nullopt;
-		auto it = typeSchema->symbolToInt.find(key);
-		if (it == typeSchema->symbolToInt.end()) return std::nullopt;
-		return (*plannerState)[typeSchema->plannerStateOffset + it->second];
-	}
-
-
-
-    // =============================================================================
-    // H_Planner Constructor
-    // =============================================================================
-    H_Planner::H_Planner(const WorldSchema& schema) : worldSchema(schema) {}
-    
-    const StateTypeFunctions* StateTypeRegistry::GetFunctions(std::type_index type) const
-    {
-        auto it = registry.find(type);
-        return it != registry.end() ? &it->second : nullptr;
-    }
-    
-    const StateTypeRegistry* g_pDebugRegistry = nullptr;
-    thread_local char g_DebugStringBuffer[4096];
-
-    // =============================================================================
-    // Library-Provided Generic Tasks Implementation
-    // =============================================================================
-    bool AchieveStateTask::Decompose(const AgentState&, const StateTypeRegistry&, std::vector<std::unique_ptr<BaseTask>>&, std::unique_ptr<BaseAction>&) const {
-        // This task is special. Its decomposition logic is handled directly inside the planner
-        // because it needs access to the user's ActionGenerator. Returning false signals the
-        // planner to handle it.
-        return false;
-    }
-    std::unique_ptr<BaseTask> AchieveStateTask::Clone() const {
-        return std::make_unique<AchieveStateTask>(AgentState(this->targetState));
-    }
-    std::string AchieveStateTask::GetName() const {
-        return "AchieveState"; // TODO: Add state debug string
-    }
-
-    ExecuteActionTask::ExecuteActionTask(std::unique_ptr<BaseAction> action) : actionToExecute(std::move(action)) {}
-    
-    bool ExecuteActionTask::Decompose(const AgentState&, const StateTypeRegistry&, std::vector<std::unique_ptr<BaseTask>>&, std::unique_ptr<BaseAction>& primitiveAction) const {
-        primitiveAction = actionToExecute->Clone();
-        return true;
-    }
-    std::unique_ptr<BaseTask> ExecuteActionTask::Clone() const {
-        return std::make_unique<ExecuteActionTask>(actionToExecute->Clone());
-    }
-    std::string ExecuteActionTask::GetName() const {
-        return "Execute: " + actionToExecute->GetName();
-    }
-    
-    // =============================================================================
-    // Planner Node Implementation
-    // =============================================================================
-    PlannerNode::PlannerNode(AgentState&& state, Goal&& tasks)
-        : currentState(std::move(state)), tasksRemaining(std::move(tasks)), parentAction(nullptr) {}
-        
-    void PlannerNode::CalculateFCost() { fCost = gCost + hCost; }
-    
-    bool ComparePlannerNodes::operator()(const std::shared_ptr<PlannerNode>& a, const std::shared_ptr<PlannerNode>& b) const {
-        if (std::abs(a->fCost - b->fCost) > 1e-6) return a->fCost > b->fCost;
-        return a->hCost > b->hCost;
-    }
-
-    // =============================================================================
-    // Utility Functions
-    // =============================================================================
-    namespace Utils
-    {
-        AgentState CombineStates(const AgentState& base, const AgentState& delta, const StateTypeRegistry& registry)
-        {
-            AgentState new_state = base;
-            for (const auto& [type, delta_prop] : delta.properties)
-            {
-                const auto* funcs = registry.GetFunctions(type);
-                if (!funcs || !funcs->add) continue;
-                auto it = new_state.properties.find(type);
-                if (it != new_state.properties.end()) {
-                    it->second = funcs->add(it->second, delta_prop);
-                } else {
-                    new_state.properties[type] = delta_prop;
-                }
-            }
-            return new_state;
-        }
-
-        AgentState SubtractStates(const AgentState& base, const AgentState& to_subtract, const StateTypeRegistry& registry)
-{
-    // Start with a copy of the base (the goal). We will remove properties from this copy as they are satisfied.
-    AgentState remaining_goal = base;
-
-    // Use an iterator-based loop so we can safely erase elements from the map.
-    for (auto goal_it = remaining_goal.properties.begin(); goal_it != remaining_goal.properties.end(); /* no increment */)
-    {
-        const std::type_index& type = goal_it->first;
-        StateProperty& goal_prop = goal_it->second;
-
-        const auto* funcs = registry.GetFunctions(type);
-        if (!funcs || !funcs->subtract) {
-            // This property type doesn't support subtraction, so we can't determine if it's met.
-            // We'll assume it's not and leave it in the remaining_goal.
-            ++goal_it;
-            continue;
-        }
-
-        // Now, check if the state-to-subtract (the current world state) has this same property.
-        auto current_state_it = to_subtract.properties.find(type);
-        if (current_state_it != to_subtract.properties.end())
-        {
-            // Both the goal and the current state have this property. Perform the subtraction.
-            const StateProperty& current_prop = current_state_it->second;
-            goal_prop = funcs->subtract(goal_prop, current_prop); // e.g., LocationState("Forest").SubtractValues(LocationState("Village"))
-
-            // After subtraction, check if the goal property is now "empty" (i.e., satisfied).
-            if (funcs->is_empty && funcs->is_empty(goal_prop))
-            {
-                // It is satisfied, so remove it from the remaining_goal map.
-                // erase() returns the iterator to the next element.
-                goal_it = remaining_goal.properties.erase(goal_it);
-            }
-            else {
-                // The property is not fully satisfied, so leave it and move to the next one.
-                ++goal_it;
-            }
-        }
-        else
-        {
-            // The current state doesn't have this property at all, so it's definitely not satisfied.
-            // Leave it in the remaining_goal and move to the next one.
-            ++goal_it;
-        }
-    }
-
-    return remaining_goal;
-}
-
-        bool IsStateSatisfyingGoal(const AgentState& state, const AgentState& goal, const StateTypeRegistry& registry)
-        {
-            AgentState remaining = SubtractStates(goal, state, registry);
-            return remaining.properties.empty();
-        }
-
-        size_t GetStateHash(const AgentState& state, const StateTypeRegistry& registry)
-        {
-            size_t seed = 0;
-            for (const auto& [type, prop] : state.properties)
-            {
-                const auto* funcs = registry.GetFunctions(type);
-                size_t prop_hash = 0;
-                if (funcs && funcs->get_hash) {
-                    prop_hash = funcs->get_hash(prop);
-                }
-                seed ^= prop_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            }
-            return seed;
-        }
-        
-        size_t GetGoalHash(const Goal& goal, const StateTypeRegistry& registry)
-        {
-            size_t seed = 0;
-            for (const auto& task : goal)
-            {
-                size_t task_hash = 0;
-
-                // Use dynamic_cast to check if the current task is the special library-provided type.
-                if (const auto* achieveTask = dynamic_cast<const AchieveStateTask*>(task.get()))
-                {
-                    // It IS an AchieveStateTask. We must hash its internal targetState
-                    // to get a unique value for this specific goal.
-                    task_hash = GetStateHash(achieveTask->targetState, registry);
-                }
-                else
-                {
-                    // It is some other user-defined task. The best we can do is fall back
-                    // to hashing its name, assuming the user gives unique names to
-                    // different task types.
-                    task_hash = std::hash<std::string>()(task->GetName());
-                }
-
-                // Combine the hash for this task into the total seed for the goal.
-                seed ^= task_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            }
-            return seed;
-        }
-
-        std::string DebugToString(const AgentState& state, const StateTypeRegistry& registry)
-        {
-            if (state.properties.empty()) return "{}";
-            std::string s = "{ ";
-            for (auto it = state.properties.begin(); it != state.properties.end(); ++it) {
-                const auto* funcs = registry.GetFunctions(it->first);
-                if (funcs && funcs->to_string) {
-                    s += funcs->to_string(it->second);
-                } else {
-                    s += "[" + std::string(it->first.name()) + ": (no toString registered)]";
-                }
-                if (std::next(it) != state.properties.end()) {
-                    s += ", ";
-                }
-            }
-            s += " }";
-            return s;
-        }
-    }
-    
-    namespace Debug {
-        void SetRegistryForVisualization(const StateTypeRegistry* registry) {
-            g_pDebugRegistry = registry;
-        }
-    }
-}
-extern "C" {
-    #pragma comment(linker, "/include:GetAgentStateDebugString2")
-    const char* GetAgentStateDebugString2(const SAHGOAP::AgentState* state) {
-        if (!state || !SAHGOAP::g_pDebugRegistry) {
-            strcpy_s(SAHGOAP::g_DebugStringBuffer, "(no state or registry)");
-            return SAHGOAP::g_DebugStringBuffer;
-        }
-        std::string str = SAHGOAP::Utils::DebugToString(*state, *SAHGOAP::g_pDebugRegistry);
-        strcpy_s(SAHGOAP::g_DebugStringBuffer, str.c_str());
-        return SAHGOAP::g_DebugStringBuffer;
+        return std::nullopt; // No plan found
     }
 }
