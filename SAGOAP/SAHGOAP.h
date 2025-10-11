@@ -120,102 +120,121 @@ namespace SAHGOAP
 	// World Model Registration
 	// =============================================================================
 
-	class WorldModel;
-	// Type-erased function wrappers for the planner's internal use.
+	class WorldModel; // Forward declaration
+
 	using ConditionFunction = std::function<bool(const AgentState&, const std::vector<int>&, ComparisonOperator)>;
 	using EffectFunction = std::function<void(AgentState&, const std::vector<int>&)>;
-	using ActionInstanceGenerator = std::function<std::vector<ActionInstance>(const AgentState&, const AgentState&, const WorldModel&)>;
-	/**
-	 * @class WorldModel
-	 * @brief The central registry where the developer teaches the library about their game's specific components and logic.
-	 */
+	using GoalApplierFunction = std::function<void(AgentState&, const std::vector<int>&)>;
+	using StateGoal = std::vector<Condition>;
+	using ActionInstanceGenerator = std::function<std::vector<ActionInstance>(
+		const AgentState&,        // Current world state
+		const StateGoal&,         // The conditions we are trying to satisfy
+		const WorldModel&
+	)>;
+
 	class WorldModel
 	{
+	private:
+		// Define internal structs first
+		struct ConditionInfo {
+			ConditionFunction erased_func;
+			std::type_index component_type;
+			
+			ConditionInfo(ConditionFunction func, std::type_index type)
+				: erased_func(std::move(func)), component_type(type) {}
+		};
+
+		struct EffectInfo {
+			EffectFunction erased_func;
+			std::type_index component_type;
+			
+			EffectInfo(EffectFunction func, std::type_index type)
+				: erased_func(std::move(func)), component_type(type) {}
+		};
+
 	public:
-		/** @brief Registers a function that can check a condition on the world state. */
-		void RegisterCondition(const std::string& name, ConditionFunction func);
-
-		void WorldModel::RegisterActionGenerator(const std::string& name, ActionInstanceGenerator func);
+		void RegisterActionGenerator(const std::string& name, ActionInstanceGenerator func);
+		void RegisterGoalApplier(const std::string& conditionName, GoalApplierFunction func);
+		void RegisterActionSchema(ActionSchema schema);
 		
-		/** @brief Registers a function that can apply an effect to the world state. */
-		void RegisterEffect(const std::string& name, EffectFunction func);
+		template<typename ComponentType>
+void RegisterCondition(const std::string& name, 
+	std::function<bool(const ComponentType&, const std::vector<int>&, ComparisonOperator)> func)
+		{
+			ConditionFunction erased_func = [func](const AgentState& state, const std::vector<int>& params, ComparisonOperator op) -> bool {
+				if (const auto* comp = state.GetComponent<ComponentType>()) {
+					return func(*comp, params, op);
+				}
+				return false;
+			};
+			
+			registered_conditions.emplace(
+				name, 
+				ConditionInfo{std::move(erased_func), std::type_index(typeid(ComponentType))}
+			);
+		}
 
-		/** @brief Registers a symbol (e.g., "Forge") and assigns it a unique integer ID. */
+		template<typename ComponentType>
+		void RegisterEffect(const std::string& name,
+		std::function<void(ComponentType&, const std::vector<int>&)> func)
+		{
+			EffectFunction erased_func = [func](AgentState& state, const std::vector<int>& params) {
+				if (auto* comp = state.AddComponent<ComponentType>()) {
+					func(*comp, params);
+				}
+			};
+    
+			registered_effects.emplace(
+				name,
+				EffectInfo{std::move(erased_func), std::type_index(typeid(ComponentType))}
+			);
+		}
+
 		void RegisterSymbol(const std::string& symbol);
 		int GetSymbolId(const std::string& symbol) const;
-		const std::string& WorldModel::GetSymbolName(int symbolId) const;
+		const std::string& GetSymbolName(int symbolId) const;
 
-		// Internal accessors used by the planner.
-		const ConditionFunction* GetCondition(const std::string& name) const;
-		const EffectFunction* GetEffect(const std::string& name) const;
-		const ActionInstanceGenerator* WorldModel::GetActionGenerator(const std::string& name) const;
+		// Internal accessors
+		const ConditionInfo* GetConditionInfo(const std::string& name) const;
+		const EffectInfo* GetEffectInfo(const std::string& name) const;
+		const std::vector<ActionSchema>& GetActionSchemas() const;
+		const GoalApplierFunction* GetGoalApplier(const std::string& name) const;
+		const ActionInstanceGenerator* GetActionGenerator(const std::string& name) const;
 
 	private:
-		std::map<std::string, ConditionFunction> registered_conditions;
-		std::map<std::string, EffectFunction> registered_effects;
+		std::map<std::string, ConditionInfo> registered_conditions;
+		std::map<std::string, EffectInfo> registered_effects;
+		std::vector<ActionSchema> registered_schemas;
+		std::map<std::string, GoalApplierFunction> registered_goal_appliers;
 		std::map<std::string, ActionInstanceGenerator> registered_generators;
 		std::map<std::string, int> symbol_to_id;
-		std::map<int, std::string> id_to_symbol;
-		int next_symbol_id = 0;
+		std::vector<std::string> id_to_symbol;
 	};
 
 	// =============================================================================
 	// Hierarchical Forward Planner
 	// =============================================================================
-	namespace internal
-	{
-		// =============================================================================
-		// Planner Internals (Implementation Detail)
-		// =============================================================================
 
-		struct PlannerNode {
-			AgentState currentState;
-			Goal tasksRemaining;
-			std::shared_ptr<ActionInstance> parentActionInstance;
-
-			float gCost = 0.0f;
-			float hCost = 0.0f;
-			float fCost = 0.0f;
-			std::shared_ptr<PlannerNode> parent = nullptr;
-        
-			void CalculateFCost() { fCost = gCost + hCost; }
-			// A more robust hash is needed for production.
-			size_t GetHash() const {
-				size_t stateHash = 0;
-				size_t goalHash = 0;
-				for(const auto& task : tasksRemaining) { goalHash ^= std::hash<std::string>()(task->GetName()); }
-				return stateHash ^ (goalHash << 1);
-			}
-		};
-
-		struct ComparePlannerNodes
-		{
-			bool operator()(const std::shared_ptr<PlannerNode>& a, const std::shared_ptr<PlannerNode>& b) const {
-				if (std::abs(a->fCost - b->fCost) > 1e-6) return a->fCost > b->fCost;
-				return a->hCost > b->hCost;
-			}
-		};
-
-	} // namespace internal
-
-
-	// This is the optimized, internal representation the planner uses in its hot loop.
-	// Parameter names are resolved to integer values.
 	struct ResolvedAction
 	{
-		struct ResolvedOperation {
-			const ConditionFunction* func; // Direct function pointer
+		struct ResolvedCondition {
+			// It holds the type-erased function directly, not the whole info struct.
+			const ConditionFunction* func; 
 			std::vector<int> params;
 			ComparisonOperator op;
+		};
+		struct ResolvedEffect {
+			const EffectFunction* func; 
+			std::vector<int> params;
 		};
 
 		const ActionSchema* schema;
 		float cost;
-		std::vector<ResolvedOperation> resolved_preconditions;
-		// A similar ResolvedEffect struct would be used for effects
+		std::vector<ResolvedCondition> resolved_preconditions;
+		std::vector<ResolvedEffect> resolved_effects;
 	};
 	
-	class H_Planner
+	class Planner
 	{
 	public:
 		/** @brief A function that estimates the cost to complete a plan from a given state. */
@@ -223,9 +242,8 @@ namespace SAHGOAP
 
 		std::optional<std::vector<ActionInstance>> Plan(
 			const AgentState& initialState,
-			Goal initialGoal,
+			StateGoal& initialConditions,
 			const WorldModel& worldModel,
-			const std::vector<ActionSchema>& allActionSchemas,
 			HeuristicFunction heuristic) const;
 	};
 }
