@@ -59,21 +59,23 @@ namespace SAHGOAP
 		std::vector<std::string> params; // Parameters referenced by name, e.g., ["$itemToGet", "1"]
 	};
 	
-	struct ActionSchema
+	/*struct ActionSchema
 	{
 		std::string name;
 		std::string generator_name;
 		std::vector<std::string> param_names;
-		float cost = 1.0f;
+		int cost = 1;
 		std::vector<Condition> preconditions;
 		std::vector<Effect> effects;
-	};
+	};*/
     
 	struct ActionInstance
 	{
-		const ActionSchema* schema;
-		// Parameters are now stored by name, which is robust. The planner will optimize this.
-		std::map<std::string, int> params;
+		std::string name;
+		int cost;
+		std::map<std::string, int> params; // Still useful for debugging and identification
+		std::vector<Condition> preconditions;
+		std::vector<Effect> effects;
 	};
 
 	const std::map<std::string, SAHGOAP::ComparisonOperator> operator_map =
@@ -154,9 +156,9 @@ namespace SAHGOAP
 		};
 
 	public:
-		void RegisterActionGenerator(const std::string& name, ActionInstanceGenerator func);
+		void RegisterActionGenerator(ActionInstanceGenerator func);
 		void RegisterGoalApplier(const std::string& conditionName, GoalApplierFunction func);
-		void RegisterActionSchema(ActionSchema schema);
+		//void RegisterActionSchema(ActionSchema schema);
 		
 		template<typename ComponentType>
 		void RegisterCondition(const std::string& name, 
@@ -201,9 +203,9 @@ namespace SAHGOAP
 		// Internal accessors
 		const ConditionInfo* GetConditionInfo(const std::string& name) const;
 		const EffectInfo* GetEffectInfo(const std::string& name) const;
-		const std::vector<ActionSchema>& GetActionSchemas() const;
+		//const std::vector<ActionSchema>& GetActionSchemas() const;
 		const GoalApplierFunction* GetGoalApplier(const std::string& name) const;
-		const ActionInstanceGenerator* GetActionGenerator(const std::string& name) const;
+		const std::vector<ActionInstanceGenerator> GetActionGenerators() const;
 
 		size_t HashState(const AgentState& state) const;
 
@@ -212,10 +214,10 @@ namespace SAHGOAP
 		
 		std::map<std::string, ConditionInfo> registered_conditions;
 		std::map<std::string, EffectInfo> registered_effects;
-		std::vector<ActionSchema> registered_schemas;
+		//std::vector<ActionSchema> registered_schemas;
 		std::map<std::type_index, HasherFunction> registered_hashers;
 		std::map<std::string, GoalApplierFunction> registered_goal_appliers;
-		std::map<std::string, ActionInstanceGenerator> registered_generators;
+		std::vector<ActionInstanceGenerator> registered_generators;
 		std::map<std::string, int> symbol_to_id;
 		std::vector<std::string> id_to_symbol;
 	};
@@ -224,7 +226,7 @@ namespace SAHGOAP
 	// Hierarchical Forward Planner
 	// =============================================================================
 
-	struct ResolvedAction
+	/*struct ResolvedAction
 	{
 		struct ResolvedCondition {
 			// It holds the type-erased function directly, not the whole info struct.
@@ -241,7 +243,7 @@ namespace SAHGOAP
 		float cost;
 		std::vector<ResolvedCondition> resolved_preconditions;
 		std::vector<ResolvedEffect> resolved_effects;
-	};
+	};*/
 	
 	class Planner
 	{

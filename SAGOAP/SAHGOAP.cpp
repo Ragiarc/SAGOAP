@@ -10,8 +10,8 @@ namespace SAHGOAP
     // World Model Implementation
     // =============================================================================
 
-    void WorldModel::RegisterActionGenerator(const std::string& name, ActionInstanceGenerator func) {
-        registered_generators[name] = std::move(func);
+    void WorldModel::RegisterActionGenerator(ActionInstanceGenerator func) {
+        registered_generators.push_back(std::move(func));
     }
 
     void WorldModel::RegisterSymbol(const std::string& symbol) {
@@ -36,24 +36,25 @@ namespace SAHGOAP
         return id_to_symbol[symbolId];
     }
     
-    const ActionInstanceGenerator* WorldModel::GetActionGenerator(const std::string& name) const {
-        auto it = registered_generators.find(name);
-        return (it != registered_generators.end()) ? &it->second : nullptr;
+
+    const std::vector<ActionInstanceGenerator> WorldModel::GetActionGenerators() const
+    {
+        return registered_generators;   
     }
 
-    const std::vector<ActionSchema>& WorldModel::GetActionSchemas() const
+    /*const std::vector<ActionSchema>& WorldModel::GetActionSchemas() const
     {
         return registered_schemas;
-    }
+    }*/
 
     void WorldModel::RegisterGoalApplier(const std::string& conditionName, GoalApplierFunction func) {
         registered_goal_appliers[conditionName] = std::move(func);
     }
 
-    void WorldModel::RegisterActionSchema(ActionSchema schema)
+    /*void WorldModel::RegisterActionSchema(ActionSchema schema)
     {
         registered_schemas.push_back(std::move(schema));
-    }
+    }*/
 
     size_t WorldModel::HashState(const AgentState& state) const
     {
@@ -119,7 +120,7 @@ namespace SAHGOAP
         return resolved_params;
     }
     
-    std::optional<ResolvedAction> ResolveAction(const ActionInstance& inst, const WorldModel& model) {
+    /*std::optional<ResolvedAction> ResolveAction(const ActionInstance& inst, const WorldModel& model) {
         ResolvedAction res;
         res.schema = inst.schema;
         res.cost = inst.schema->cost;
@@ -153,7 +154,7 @@ namespace SAHGOAP
         }
 
         return res;
-    }
+    }*/
 
     using StateGoal = std::vector<Condition>;
     
@@ -172,7 +173,7 @@ namespace SAHGOAP
         ExecuteActionTask(ActionInstance act) : action(std::move(act)) {}
         bool Decompose(const AgentState&, Goal&) const override { return false; /* Handled by planner */ }
         std::unique_ptr<BaseTask> Clone() const override { return std::make_unique<ExecuteActionTask>(action); }
-        std::string GetName() const override { return "Execute: " + action.schema->name; }
+        std::string GetName() const override { return "Execute: " + action.name; }
     };
 
     namespace internal
@@ -283,49 +284,43 @@ namespace SAHGOAP
             {
                 StateGoal unsatisfiedConditions;
                 for (const auto& condition : achieveTask->targetConditions) {
-                    const auto* func = worldModel.GetConditionInfo(condition.name);
-                    auto params = ResolveParams({}, condition.params, worldModel); // No instance params for this check
+                    // We need to resolve params without an instance context here.
+                    auto params = ResolveParams(std::nullopt, condition.params, worldModel);
+                    const auto* cond_info = worldModel.GetConditionInfo(condition.name);
 
-                    if (!func || !params || !(func->erased_func)(currentNode->currentState, *params, condition.op)) {
+                    if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, condition.op)) {
                         unsatisfiedConditions.push_back(condition);
                     }
                 }
 
                 if (unsatisfiedConditions.empty()) {
-                    // The task is already complete. Create a "do nothing" node that simply pops the task.
-                    auto neighborNode = std::make_shared<internal::PlannerNode>();
-                    neighborNode->currentState = currentNode->currentState; // State is unchanged
-                    neighborNode->tasksRemaining = std::move(remainingTasks); // Use the list of tasks without the current one
-                    neighborNode->parent = currentNode;
-                    neighborNode->gCost = currentNode->gCost; // No action was taken, so cost does not increase
-                    neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
-                    neighborNode->CalculateFCost();
-                    openSet.push(neighborNode);
+                    // Task is already complete. Create a "do nothing" node.
+                    createDecompositionNode(currentNode, std::move(remainingTasks));
                     continue;
                 }
 
-                // Generate actions based on the UNSATISFIED conditions.
+                // Generate actions that can satisfy the unmet conditions.
                 std::vector<ActionInstance> potentialInstances;
-                for (const auto& schema : worldModel.GetActionSchemas()) {
-                    if (const auto* generator = worldModel.GetActionGenerator(schema.generator_name)) {
-                        // Call the generator with the correct StateGoal type
-                        auto newInstances = (*generator)(currentNode->currentState, unsatisfiedConditions, worldModel);
-                        for(auto& inst : newInstances) { inst.schema = &schema; }
-                        potentialInstances.insert(potentialInstances.end(), 
-                                                  std::make_move_iterator(newInstances.begin()), 
-                                                  std::make_move_iterator(newInstances.end()));
-                    }
+                for (const auto& generator : worldModel.GetActionGenerators()) {
+                    auto newInstances = generator(currentNode->currentState, unsatisfiedConditions, worldModel);
+                    potentialInstances.insert(potentialInstances.end(), 
+                                              std::make_move_iterator(newInstances.begin()), 
+                                              std::make_move_iterator(newInstances.end()));
                 }
-                if (potentialInstances.empty()) continue; // Dead end.
-
-                for (auto& instance : potentialInstances)
-                {
+                if (potentialInstances.empty()) {
+                    continue; // Dead end.
+                }
+                
+                // For each potential action, create a new branch where the next task is to EXECUTE that action.
+                for (ActionInstance& instance : potentialInstances) {
                     Goal decompTasks;
-                    decompTasks.push_back(std::make_unique<AchieveStateTask>(instance.schema->preconditions));
-                    decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(instance))); 
-                    decompTasks.insert(decompTasks.end(), 
-                                       std::make_move_iterator(remainingTasks.begin()), 
-                                       std::make_move_iterator(remainingTasks.end()));
+                    // The decomposition of "Achieve Goal G" is "Execute Action A"
+                    decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(instance)));
+                
+                    // Add the rest of the original tasks to the end of this new plan branch.
+                    for(const auto& task : remainingTasks) {
+                        decompTasks.push_back(task->Clone());
+                    }
 
                     createDecompositionNode(currentNode, std::move(decompTasks));
                 }
@@ -334,7 +329,7 @@ namespace SAHGOAP
             else if (auto* executeTask = dynamic_cast<ExecuteActionTask*>(currentTask.get())) {
                 const ActionInstance& instance = executeTask->action;
                 bool preconditionsMet = true;
-                for (const auto& cond_schema : instance.schema->preconditions) {
+                for (const auto& cond_schema : instance.preconditions) {
                     const auto* cond_info = worldModel.GetConditionInfo(cond_schema.name);
                     auto params = ResolveParams(instance, cond_schema.params, worldModel);
                     if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, cond_schema.op)) {
@@ -345,7 +340,7 @@ namespace SAHGOAP
 
                 if (preconditionsMet) {
                     AgentState nextState = currentNode->currentState;
-                    for (const auto& effect_schema : instance.schema->effects) {
+                    for (const auto& effect_schema : instance.effects) {
                         const auto* effect_info = worldModel.GetEffectInfo(effect_schema.name);
                         auto params = ResolveParams(instance, effect_schema.params, worldModel);
                         if (effect_info && params) {
@@ -358,13 +353,13 @@ namespace SAHGOAP
                     neighborNode->tasksRemaining = std::move(remainingTasks);
                     neighborNode->parent = currentNode;
                     neighborNode->parentActionInstance = std::make_shared<ActionInstance>(instance);
-                    neighborNode->gCost = currentNode->gCost + instance.schema->cost;
+                    neighborNode->gCost = currentNode->gCost + instance.cost;
                     neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
                     neighborNode->CalculateFCost();
                     openSet.push(neighborNode);
                 } else {
                     Goal decompTasks;
-                    decompTasks.push_back(std::make_unique<AchieveStateTask>(instance.schema->preconditions));
+                    decompTasks.push_back(std::make_unique<AchieveStateTask>(instance.preconditions));
                     decompTasks.push_back(currentTask->Clone());
                     decompTasks.insert(decompTasks.end(), std::make_move_iterator(remainingTasks.begin()), std::make_move_iterator(remainingTasks.end()));
                     createDecompositionNode(currentNode, std::move(decompTasks));
