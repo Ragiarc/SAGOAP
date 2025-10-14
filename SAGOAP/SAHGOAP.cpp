@@ -195,17 +195,15 @@ namespace SAHGOAP
             void CalculateFCost() { fCost = gCost + hCost; }
             // A more robust hash is needed for production.
             size_t GetHash(const WorldModel& model) const {
-                // 1. Get a hash of the concrete world state using the new system.
                 size_t stateHash = model.HashState(currentState);
-    
-                // 2. Get a hash of the remaining tasks.
-                size_t goalHash = 0;
+                
+                size_t goalHash = model.HashGoal(tasksRemaining);
                 for(const auto& task : tasksRemaining) {
                     goalHash ^= std::hash<std::string>()(task->GetName()); // Simple name hash is usually sufficient
                 }
 
                 // 3. Combine them.
-                return stateHash ^ (goalHash << 1);
+                return stateHash ^ (goalHash + 0x9e3779b9 + (stateHash << 6) + (stateHash >> 2));
             }
         };
 
@@ -217,8 +215,49 @@ namespace SAHGOAP
             }
         };
 
+        size_t HashCondition(const Condition& cond) {
+            size_t seed = std::hash<std::string>()(cond.name);
+            seed ^= std::hash<int>()(static_cast<int>(cond.op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            for (const auto& param : cond.params) {
+                seed ^= std::hash<std::string>()(param) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+            return seed;
+        }
+
     } // namespace internal
 
+    size_t WorldModel::HashGoal(const Goal& goal) const
+    {
+        size_t seed = 0;
+        for (const auto& task_ptr : goal) {
+            size_t task_hash = 0;
+            // Use dynamic_cast to determine the type of task and hash its specific contents.
+        
+            if (const auto* achieveTask = dynamic_cast<const AchieveStateTask*>(task_ptr.get())) {
+                // For an AchieveStateTask, hash its list of target conditions.
+                task_hash = std::hash<std::string>()("AchieveStateTask");
+                for (const auto& cond : achieveTask->targetConditions) {
+                    task_hash ^= SAHGOAP::internal::HashCondition(cond);
+                }
+            } 
+            else if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(task_ptr.get())) {
+                // For an ExecuteActionTask, hash the action's name and parameters.
+                task_hash = std::hash<std::string>()(executeTask->action.name);
+                for (const auto& [key, value] : executeTask->action.params) {
+                    task_hash ^= std::hash<std::string>()(key);
+                    task_hash ^= std::hash<int>()(value);
+                }
+            }
+            else if (task_ptr) {
+                // Fallback for custom user tasks: just hash the name.
+                task_hash = std::hash<std::string>()(task_ptr->GetName());
+            }
+
+            // Combine the hash for this task into the total seed.
+            seed ^= task_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
 
 
     std::optional<std::vector<ActionInstance>> Planner::Plan(

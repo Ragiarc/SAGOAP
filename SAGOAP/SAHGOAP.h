@@ -209,6 +209,8 @@ namespace SAHGOAP
 
 		size_t HashState(const AgentState& state) const;
 
+		size_t HashGoal(const Goal& goal) const;
+
 	private:
 		using HasherFunction = std::function<size_t(const std::any&)>;
 		
