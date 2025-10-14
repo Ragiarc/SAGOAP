@@ -110,6 +110,32 @@ TEST_F(SAHGOAP_Test, FindsOneStepPlan) {
             return op == SAHGOAP::ComparisonOperator::EqualTo && comp.hasFlag == target;
         });
 
+    model.RegisterCondition<WorldKnowledgeComponent>("World.HasResource",
+    [](const WorldKnowledgeComponent& comp, const std::vector<int>& params, SAHGOAP::ComparisonOperator op) {
+        if (params.size() < 2) return false;
+        int item_id = params[0];
+        int quantity = params[1];
+
+        auto it = comp.resources.find(item_id);
+        int current_quant = (it == comp.resources.end()) ? 0 : it->second.quantity;
+
+        if (op == SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo) {
+            return current_quant >= quantity;
+        }
+        // ... other operators could be implemented here ...
+        return false;
+    });
+
+    model.RegisterEffect<WorldKnowledgeComponent>("World.UpdateResource",
+    [](WorldKnowledgeComponent& comp, const std::vector<int>& params) {
+        if (params.size() < 2) return;
+        int item_id = params[0];
+        int quantity_change = params[1];
+        
+        // This will correctly add a negative number, depleting the resource.
+        comp.resources[item_id].quantity += quantity_change;
+    });
+
     model.RegisterActionGenerator(
         [&](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& model) {
             std::vector<SAHGOAP::ActionInstance> instances;
@@ -225,37 +251,65 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
         });
             
     model.RegisterActionGenerator(
-        [this](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {
-            std::vector<SAHGOAP::ActionInstance> instances;
-            const auto* world = state.GetComponent<WorldKnowledgeComponent>();
-            if (!world) return instances;
+    [this](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {
+        std::vector<SAHGOAP::ActionInstance> instances;
 
-            for (const auto& condition : goal) {
-                if (condition.name == "Inventory.Has" && condition.op == SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo) {
-                    int item_id = std::stoi(condition.params[0]);
-                    int needed_quant = std::stoi(condition.params[1]);
+        const auto* world = state.GetComponent<WorldKnowledgeComponent>();
+        if (!world) return instances;
+
+        // Look for an "Inventory.Has" condition in the goal.
+        for (const auto& condition : goal) {
+            if (condition.name == "Inventory.Has" && condition.op == SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo) {
+                // Assuming parameter at index 0 is the item ID
+                int item_id = std::stoi(condition.params[0]);
+                int needed_quant = std::stoi(condition.params[1]);
+                
+                int current_quant = 0;
+                if(const auto* inv = state.GetComponent<InventoryComponent>()) {
+                    auto it = inv->items.find(item_id);
+                    if (it != inv->items.end()) current_quant = it->second;
+                }
+
+                // Is the goal for this item already met? If so, we don't need to generate an action.
+                if (current_quant >= needed_quant) {
+                    continue;
+                }
+
+                // We need this item. Check if the world has it.
+                auto res_it = world->resources.find(item_id);
+                if (res_it != world->resources.end() && res_it->second.quantity > 0) {
+                    int quantityToGet = std::min(needed_quant - current_quant, res_it->second.quantity);
+                    // --- Build the complete ActionInstance ---
+                    SAHGOAP::ActionInstance inst;
+
+                    // 1. Copy the template data from the schema
+                    inst.name = "GetItem";
+                    inst.cost = 1;
+                    inst.preconditions.push_back({
+                        "Location.Is", 
+                        {std::to_string(res_it->second.location_id)}, 
+                        SAHGOAP::ComparisonOperator::EqualTo
+                    });
+                    inst.effects.push_back({
+                        "Inventory.Add", 
+                        {std::to_string(item_id), std::to_string(quantityToGet)} // Use parameter references
+                    });
+                    inst.effects.push_back({
+                        "World.UpdateResource",
+                        {"$itemToGet", std::to_string(-quantityToGet)} // Effect can be a literal value
+                    });
                     
-                    int current_quant = 0;
-                    if(const auto* inv = state.GetComponent<InventoryComponent>()) {
-                        auto it = inv->items.find(item_id);
-                        if (it != inv->items.end()) current_quant = it->second;
-                    }
-
-                    if (current_quant < needed_quant) {
-                        auto res_it = world->resources.find(item_id);
-                        if (res_it != world->resources.end() && res_it->second.quantity > 0) {
-                            SAHGOAP::ActionInstance inst;
-                            inst.params["itemToGet"] = item_id;
-                            // This "smart" generator gets the total amount needed at once.
-                            inst.params["quantityToGet"] = std::min(needed_quant - current_quant, res_it->second.quantity);
-                            inst.params["sourceLocation"] = res_it->second.location_id;
-                            instances.push_back(inst);
-                        }
-                    }
+                    // 2. Fill in the specific parameters for THIS instance
+                    inst.params["itemToGet"] = item_id;
+                    inst.params["quantityToGet"] = quantityToGet;
+                    inst.params["sourceLocation"] = res_it->second.location_id;
+                    
+                    instances.push_back(std::move(inst));
                 }
             }
-            return instances;
-        });
+        }
+        return instances;
+    });
 
    model.RegisterActionGenerator(
     [this](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {

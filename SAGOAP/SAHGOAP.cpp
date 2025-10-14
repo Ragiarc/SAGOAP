@@ -309,11 +309,12 @@ namespace SAHGOAP
             }
             
             size_t currentHash = currentNode->GetHash(worldModel);
-            if (closedSet.count(currentHash)) continue;
+            if (closedSet.contains(currentHash)) continue;
             closedSet.insert(currentHash);
 
             auto currentTask = currentNode->tasksRemaining.front()->Clone();
             Goal remainingTasks;
+            remainingTasks.reserve(currentNode->tasksRemaining.size() - 1);
             for (size_t i = 1; i < currentNode->tasksRemaining.size(); ++i) {
                 remainingTasks.push_back(currentNode->tasksRemaining[i]->Clone());
             }
@@ -339,32 +340,40 @@ namespace SAHGOAP
                 }
 
                 // Generate actions that can satisfy the unmet conditions.
-                std::vector<ActionInstance> potentialInstances;
+                std::vector<ActionInstance> potentialActions;
                 for (const auto& generator : worldModel.GetActionGenerators()) {
                     auto newInstances = generator(currentNode->currentState, unsatisfiedConditions, worldModel);
-                    potentialInstances.insert(potentialInstances.end(), 
+                    potentialActions.insert(potentialActions.end(), 
                                               std::make_move_iterator(newInstances.begin()), 
                                               std::make_move_iterator(newInstances.end()));
                 }
-                if (potentialInstances.empty()) {
+                if (potentialActions.empty()) {
                     continue; // Dead end.
                 }
                 
                 // For each potential action, create a new branch where the next task is to EXECUTE that action.
-                for (ActionInstance& instance : potentialInstances) {
+                while(!potentialActions.empty())
+                {
+                    auto action = potentialActions.back();
+                    potentialActions.pop_back();
+
                     Goal decompTasks;
-                    // The decomposition of "Achieve Goal G" is "Execute Action A"
-                    decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(instance)));
-                
-                    // Add the rest of the original tasks to the end of this new plan branch.
-                    for(const auto& task : remainingTasks) {
-                        decompTasks.push_back(task->Clone());
+                    AchieveStateTask requirements = action.preconditions;
+
+                    if(!requirements.targetConditions.empty())
+                    {
+                        decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(requirements)));
                     }
+                    decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(action)));
+
+                    for(auto& task : remainingTasks) decompTasks.push_back(task->Clone());
 
                     createDecompositionNode(currentNode, std::move(decompTasks));
                 }
             }
             // --- Case 2: ExecuteActionTask ---
+            // This branch handles tasks that are NOT AchieveStateTask.
+            // It can decompose into a list of sub-tasks.
             else if (auto* executeTask = dynamic_cast<ExecuteActionTask*>(currentTask.get())) {
                 const ActionInstance& instance = executeTask->action;
                 bool preconditionsMet = true;
@@ -397,20 +406,36 @@ namespace SAHGOAP
                     neighborNode->CalculateFCost();
                     openSet.push(neighborNode);
                 } else {
+                    // PRECONDITIONS NOT MET: We need to create a sub-goal!
+                    // This is the logic that was missing.
+                        
+                    // Create a new task list for the decomposition.
                     Goal decompTasks;
-                    decompTasks.push_back(std::make_unique<AchieveStateTask>(instance.preconditions));
+                        
+                    // a. Add a task to achieve the unmet requirements.
+                    decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(instance.preconditions)));
+                        
+                    // b. Add the original task back so we can try it again later.
                     decompTasks.push_back(currentTask->Clone());
-                    decompTasks.insert(decompTasks.end(), std::make_move_iterator(remainingTasks.begin()), std::make_move_iterator(remainingTasks.end()));
+                        
+                    // c. Add the rest of the parent's plan.
+                    for (auto& task : remainingTasks) {
+                        decompTasks.push_back(task->Clone());
+                    }
+
+                    // Create a neighbor node that will attempt this new sub-plan.
+                    // The world state and plan-so-far do not change yet.
                     createDecompositionNode(currentNode, std::move(decompTasks));
                 }
             }
             // --- Case 3: Custom, user-defined complex task ---
             else {
-                Goal subTasks;
-                if (currentTask->Decompose(currentNode->currentState, subTasks)) {
-                     subTasks.insert(subTasks.end(), std::make_move_iterator(remainingTasks.begin()), std::make_move_iterator(remainingTasks.end()));
-                    createDecompositionNode(currentNode, std::move(subTasks));
+                std::vector<std::unique_ptr<BaseTask>> subTasks;
+                for (auto& task : remainingTasks) {
+                    subTasks.push_back(task->Clone());
                 }
+                    
+                createDecompositionNode(currentNode, std::move(subTasks));
             }
         }
 
