@@ -24,6 +24,7 @@ namespace SAHGOAP
 	class AgentState
 	{
 	public:
+		std::map<std::type_index, std::any> components;
 		/** @brief Gets a mutable pointer to a component of type T. Adds a default-constructed component if not present. */
 		template<typename T>
 		T* AddComponent();
@@ -33,7 +34,7 @@ namespace SAHGOAP
 		const T* GetComponent() const;
 
 	private:
-		std::map<std::type_index, std::any> components;
+		
 	};
 
 	using PlannerState = std::vector<int>;
@@ -158,14 +159,14 @@ namespace SAHGOAP
 		void RegisterActionSchema(ActionSchema schema);
 		
 		template<typename ComponentType>
-void RegisterCondition(const std::string& name, 
-	std::function<bool(const ComponentType&, const std::vector<int>&, ComparisonOperator)> func)
-		{
-			ConditionFunction erased_func = [func](const AgentState& state, const std::vector<int>& params, ComparisonOperator op) -> bool {
-				if (const auto* comp = state.GetComponent<ComponentType>()) {
-					return func(*comp, params, op);
-				}
-				return false;
+		void RegisterCondition(const std::string& name, 
+			std::function<bool(const ComponentType&, const std::vector<int>&, ComparisonOperator)> func)
+			{
+				ConditionFunction erased_func = [func](const AgentState& state, const std::vector<int>& params, ComparisonOperator op) -> bool {
+					if (const auto* comp = state.GetComponent<ComponentType>()) {
+						return func(*comp, params, op);
+					}
+					return false;
 			};
 			
 			registered_conditions.emplace(
@@ -190,6 +191,9 @@ void RegisterCondition(const std::string& name,
 			);
 		}
 
+		template<typename ComponentType>
+		void RegisterComponentHasher(std::function<size_t(const ComponentType&)> hasher);
+
 		void RegisterSymbol(const std::string& symbol);
 		int GetSymbolId(const std::string& symbol) const;
 		const std::string& GetSymbolName(int symbolId) const;
@@ -201,10 +205,15 @@ void RegisterCondition(const std::string& name,
 		const GoalApplierFunction* GetGoalApplier(const std::string& name) const;
 		const ActionInstanceGenerator* GetActionGenerator(const std::string& name) const;
 
+		size_t HashState(const AgentState& state) const;
+
 	private:
+		using HasherFunction = std::function<size_t(const std::any&)>;
+		
 		std::map<std::string, ConditionInfo> registered_conditions;
 		std::map<std::string, EffectInfo> registered_effects;
 		std::vector<ActionSchema> registered_schemas;
+		std::map<std::type_index, HasherFunction> registered_hashers;
 		std::map<std::string, GoalApplierFunction> registered_goal_appliers;
 		std::map<std::string, ActionInstanceGenerator> registered_generators;
 		std::map<std::string, int> symbol_to_id;

@@ -55,6 +55,26 @@ namespace SAHGOAP
         registered_schemas.push_back(std::move(schema));
     }
 
+    size_t WorldModel::HashState(const AgentState& state) const
+    {
+        size_t seed = 0;
+        // Iterate through the components of the given AgentState.
+        // std::map iteration is ordered, which is good for a consistent hash.
+        for (const auto& [type_idx, component_any] : state.components) {
+            // Find the registered hasher for this component's type.
+            auto hasher_it = registered_hashers.find(type_idx);
+            if (hasher_it != registered_hashers.end()) {
+                // A hasher was found, so call it.
+                const HasherFunction& hasher = hasher_it->second;
+                size_t component_hash = hasher(component_any);
+
+                // Combine the component's hash into the total seed (boost::hash_combine style).
+                seed ^= component_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+        }
+        return seed;
+    }
+
     const WorldModel::ConditionInfo* WorldModel::GetConditionInfo(const std::string& name) const {
         auto it = registered_conditions.find(name);
         return (it != registered_conditions.end()) ? &it->second : nullptr;
@@ -173,10 +193,17 @@ namespace SAHGOAP
         
             void CalculateFCost() { fCost = gCost + hCost; }
             // A more robust hash is needed for production.
-            size_t GetHash() const {
-                size_t stateHash = 0;
+            size_t GetHash(const WorldModel& model) const {
+                // 1. Get a hash of the concrete world state using the new system.
+                size_t stateHash = model.HashState(currentState);
+    
+                // 2. Get a hash of the remaining tasks.
                 size_t goalHash = 0;
-                for(const auto& task : tasksRemaining) { goalHash ^= std::hash<std::string>()(task->GetName()); }
+                for(const auto& task : tasksRemaining) {
+                    goalHash ^= std::hash<std::string>()(task->GetName()); // Simple name hash is usually sufficient
+                }
+
+                // 3. Combine them.
                 return stateHash ^ (goalHash << 1);
             }
         };
@@ -241,7 +268,7 @@ namespace SAHGOAP
                 return finalPlan;
             }
             
-            size_t currentHash = currentNode->GetHash();
+            size_t currentHash = currentNode->GetHash(worldModel);
             if (closedSet.count(currentHash)) continue;
             closedSet.insert(currentHash);
 
