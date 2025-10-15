@@ -1,3 +1,5 @@
+#include <chrono>
+
 #include "gtest/gtest.h"
 #include "SAHGOAP.h"
 
@@ -176,8 +178,11 @@ TEST_F(SAHGOAP_Test, FindsOneStepPlan) {
 
     // --- 2. ACT ---
     SAHGOAP::Planner planner;
-    //model.RegisterActionSchema(SetFlagSchema);
+    auto start_time = std::chrono::high_resolution_clock::now();
     auto plan = planner.Plan(initialState, goalConditions, model, heuristic);
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    std::cout << duration.count() << " microseconds" << std::endl;
 
     // --- 3. ASSERT ---
     ASSERT_TRUE(plan.has_value()) << "Planner failed to find a solution.";
@@ -380,11 +385,17 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
 
     // --- 2. ACT ---
     SAHGOAP::Planner planner;
+    auto start_time = std::chrono::high_resolution_clock::now();
     auto planResult = planner.Plan(initialState, goalConditions, model, heuristic);
-
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    std::cout << duration.count() << " microseconds" << std::endl;
     // --- 3. ASSERT ---
     ASSERT_TRUE(planResult.has_value()) << "Planner failed to find the sword crafting plan.";
+
+    
     const auto& plan = *planResult;
+    
     
     // The plan with a smart GetItem generator:
     // 1. Move(Mines)
