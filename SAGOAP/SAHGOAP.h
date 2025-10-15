@@ -223,11 +223,13 @@ namespace SAHGOAP
 		std::map<std::string, int> symbol_to_id;
 		std::vector<std::string> id_to_symbol;
 	};
+	
 
 	// =============================================================================
 	// Hierarchical Forward Planner
 	// =============================================================================
-
+	std::optional<std::vector<int>> ResolveParams(const std::optional<ActionInstance>& inst, const std::vector<std::string>& param_strings, const WorldModel& model);
+	class ExecuteActionTask;
 	/*struct ResolvedAction
 	{
 		struct ResolvedCondition {

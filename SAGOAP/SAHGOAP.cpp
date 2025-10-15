@@ -2,6 +2,7 @@
 #include <queue>
 #include <unordered_set>
 #include <algorithm>
+#include <set>
 #include <string>
 
 namespace SAHGOAP
@@ -266,6 +267,30 @@ namespace SAHGOAP
         const WorldModel& worldModel,
         HeuristicFunction heuristic) const
     {
+
+        heuristic = [&](const AgentState& state, const Goal& goal) -> float {
+            std::set<std::string> uniqueUnsatisfiedPreconditions;
+        
+            // This heuristic can now correctly dynamic_cast because it's inside the library.
+            for (const auto& task_ptr : goal) {
+                if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(task_ptr.get())) {
+                    const auto& action = executeTask->action;
+                    for (const auto& condition : action.preconditions) {
+                        auto params = ResolveParams(action, condition.params, worldModel);
+                        const auto* cond_info = worldModel.GetConditionInfo(condition.name);
+                    
+                        if (cond_info && params && !(cond_info->erased_func)(state, *params, condition.op)) {
+                            // Condition is NOT satisfied. Add its canonical representation to the set.
+                            std::string key = condition.name;
+                            for(int p : *params) key += "_" + std::to_string(p);
+                            uniqueUnsatisfiedPreconditions.insert(key);
+                        }
+                    }
+                }
+            }
+            return static_cast<float>(uniqueUnsatisfiedPreconditions.size());
+        };
+        
         Goal initialGoal;
         initialGoal.push_back(std::make_unique<AchieveStateTask>(initialConditions));
         

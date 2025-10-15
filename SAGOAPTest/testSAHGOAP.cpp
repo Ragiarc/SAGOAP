@@ -236,7 +236,7 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
                          if (target_loc_id != currentLoc->location_id) {
                              SAHGOAP::ActionInstance inst;
                              inst.name = "MoveTo";
-                             inst.cost = 1; // for now
+                             inst.cost = 10; // for now
                              inst.params["targetLocation"] = target_loc_id;
                              // It copies the preconditions and effects from the schema.
                              inst.preconditions = {}; 
