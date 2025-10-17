@@ -411,18 +411,22 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
 
     EXPECT_EQ(plan[1].name, "GetItem");
     EXPECT_EQ(plan[1].params.at("itemToGet"), item_ore);
-    EXPECT_EQ(plan[1].params.at("quantityToGet"), 2);
+    EXPECT_EQ(plan[1].params.at("quantityToGet"), 1);
 
-    EXPECT_EQ(plan[2].name, "MoveTo");
-    EXPECT_EQ(plan[2].params.at("targetLocation"), loc_forge);
+    EXPECT_EQ(plan[2].name, "GetItem");
+    EXPECT_EQ(plan[2].params.at("itemToGet"), item_ore);
+    EXPECT_EQ(plan[2].params.at("quantityToGet"), 1);
+
+    EXPECT_EQ(plan[3].name, "MoveTo");
+    EXPECT_EQ(plan[3].params.at("targetLocation"), loc_forge);
 
     // The craft actions might be generic "Craft" schemas, so we check the recipeId param.
-    EXPECT_EQ(plan[3].name, "Craft");
-    EXPECT_EQ(plan[3].params.at("recipeId"), item_ingot);
-
     EXPECT_EQ(plan[4].name, "Craft");
     EXPECT_EQ(plan[4].params.at("recipeId"), item_ingot);
 
     EXPECT_EQ(plan[5].name, "Craft");
-    EXPECT_EQ(plan[5].params.at("recipeId"), item_sword);
+    EXPECT_EQ(plan[5].params.at("recipeId"), item_ingot);
+
+    EXPECT_EQ(plan[6].name, "Craft");
+    EXPECT_EQ(plan[6].params.at("recipeId"), item_sword);
 }

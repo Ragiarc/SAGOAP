@@ -268,19 +268,27 @@ namespace SAHGOAP
         HeuristicFunction heuristic) const
     {
 
+        int nodes_generated = 0;
+        int nodes_expanded = 0;
+        printf("\n[PLANNER START]\n---------------\n");
+
         heuristic = [&](const AgentState& state, const Goal& goal) -> float {
             std::set<std::string> uniqueUnsatisfiedPreconditions;
-        
+    
             // This heuristic can now correctly dynamic_cast because it's inside the library.
             for (const auto& task_ptr : goal) {
+                // We only care about the preconditions of actions we intend to execute.
                 if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(task_ptr.get())) {
                     const auto& action = executeTask->action;
                     for (const auto& condition : action.preconditions) {
+                        // Resolve the parameters for this specific condition instance.
                         auto params = ResolveParams(action, condition.params, worldModel);
                         const auto* cond_info = worldModel.GetConditionInfo(condition.name);
-                    
+                
+                        // Check if the condition is currently met.
                         if (cond_info && params && !(cond_info->erased_func)(state, *params, condition.op)) {
-                            // Condition is NOT satisfied. Add its canonical representation to the set.
+                            // Condition is NOT satisfied. Add its canonical representation to the set
+                            // to ensure we only count each unique unmet condition once.
                             std::string key = condition.name;
                             for(int p : *params) key += "_" + std::to_string(p);
                             uniqueUnsatisfiedPreconditions.insert(key);
@@ -304,6 +312,7 @@ namespace SAHGOAP
         startNode->hCost = heuristic(startNode->currentState, startNode->tasksRemaining);
         startNode->CalculateFCost();
         openSet.push(startNode);
+        nodes_generated++;
 
         auto createDecompositionNode = [&](std::shared_ptr<internal::PlannerNode> parent, Goal&& newTasks) {
             auto neighborNode = std::make_shared<internal::PlannerNode>();
@@ -314,13 +323,26 @@ namespace SAHGOAP
             neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
             neighborNode->CalculateFCost();
             openSet.push(neighborNode);
+            nodes_generated++;
+
+            const char* topTaskName = neighborNode->tasksRemaining.empty() ? "[GOAL]" : neighborNode->tasksRemaining.front()->GetName().c_str();
+            printf("  [DECOMP] Pushing new node. Top Task: %s (g=%.1f, h=%.1f, f=%.1f)\n", 
+                   topTaskName, neighborNode->gCost, neighborNode->hCost, neighborNode->fCost);
         };
 
         while (!openSet.empty()) {
             std::shared_ptr<internal::PlannerNode> currentNode = openSet.top();
             openSet.pop();
+            nodes_expanded++;
+
+            
 
             if (currentNode->tasksRemaining.empty()) {
+                printf("---------------\n[PLANNER SUCCESS]\n");
+                printf("Total Nodes Generated: %d\n", nodes_generated);
+                printf("Total Nodes Expanded: %d\n", nodes_expanded);
+                printf("---------------\n");
+                
                 std::vector<ActionInstance> finalPlan;
                 std::shared_ptr<internal::PlannerNode> pathNode = currentNode;
                 while (pathNode != nullptr && pathNode->parent != nullptr) {
@@ -332,9 +354,17 @@ namespace SAHGOAP
                 std::reverse(finalPlan.begin(), finalPlan.end());
                 return finalPlan;
             }
+
+            printf("\n[POP] Popped Node #%d (f=%.1f, g=%.1f, h=%.1f). Tasks left: %zu. Top Task: %s\n", 
+                   nodes_expanded, currentNode->fCost, currentNode->gCost, currentNode->hCost, 
+                   currentNode->tasksRemaining.size(), currentNode->tasksRemaining.front()->GetName().c_str());
             
             size_t currentHash = currentNode->GetHash(worldModel);
-            if (closedSet.contains(currentHash)) continue;
+            if (closedSet.contains(currentHash))
+            {
+                printf("  [SKIP] Node is already in closed set.\n");
+                continue;
+            }
             closedSet.insert(currentHash);
 
             auto currentTask = currentNode->tasksRemaining.front()->Clone();
@@ -359,6 +389,7 @@ namespace SAHGOAP
                 }
 
                 if (unsatisfiedConditions.empty()) {
+                    printf("  [SATISFIED] AchieveStateTask is already met.\n");
                     // Task is already complete. Create a "do nothing" node.
                     createDecompositionNode(currentNode, std::move(remainingTasks));
                     continue;
@@ -373,9 +404,10 @@ namespace SAHGOAP
                                               std::make_move_iterator(newInstances.end()));
                 }
                 if (potentialActions.empty()) {
+                    printf("  [DEAD END] No action generator could satisfy goal.\n");
                     continue; // Dead end.
                 }
-                
+                printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
                 // For each potential action, create a new branch where the next task is to EXECUTE that action.
                 while(!potentialActions.empty())
                 {
@@ -412,6 +444,7 @@ namespace SAHGOAP
                 }
 
                 if (preconditionsMet) {
+                    printf("  [EXECUTE] Preconditions met for '%s'. Applying effects.\n", instance.name.c_str());
                     AgentState nextState = currentNode->currentState;
                     for (const auto& effect_schema : instance.effects) {
                         const auto* effect_info = worldModel.GetEffectInfo(effect_schema.name);
@@ -430,16 +463,18 @@ namespace SAHGOAP
                     neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
                     neighborNode->CalculateFCost();
                     openSet.push(neighborNode);
+                    nodes_generated++;
+                    printf("  [APPLY] Created new state node (f=%.1f)\n", neighborNode->fCost);
                 } else {
                     // PRECONDITIONS NOT MET: We need to create a sub-goal!
-                    // This is the logic that was missing.
+                    printf("  [DECOMP] Preconditions not met for '%s'. Decomposing to achieve them.\n", instance.name.c_str());
                         
                     // Create a new task list for the decomposition.
                     Goal decompTasks;
                         
                     // a. Add a task to achieve the unmet requirements.
-                    decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(instance.preconditions)));
-                        
+                    //decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(instance.preconditions)));
+                    decompTasks.push_back(std::make_unique<AchieveStateTask>(instance.preconditions));    
                     // b. Add the original task back so we can try it again later.
                     decompTasks.push_back(currentTask->Clone());
                         
@@ -463,7 +498,7 @@ namespace SAHGOAP
                 createDecompositionNode(currentNode, std::move(subTasks));
             }
         }
-
+        printf("---------------\n[PLANNER FAILED]\nTotal Nodes Generated: %d\nTotal Nodes Expanded: %d\n---------------\n", nodes_generated, nodes_expanded);
         return std::nullopt;
     }
 }
