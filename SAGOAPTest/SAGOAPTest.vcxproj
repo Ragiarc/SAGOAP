@@ -44,11 +44,13 @@
     <ClCompile Include="TestStateActionSpaces\SurvivalWorld\Actions\A_Move.cpp" />
     <ClCompile Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SC_DiscreteLocation.cpp" />
     <ClCompile Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SurvivalComponents.cpp" />
+    <ClCompile Include="test_utils.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="nlohmann\json.hpp" />
     <ClInclude Include="TestStateActionSpaces\SurvivalWorld\Actions\A_Move.h" />
     <ClInclude Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SC_DiscreteLocation.h" />
     <ClInclude Include="TestStateActionSpaces\SurvivalWorld\StateComponents\SurvivalComponents.h" />

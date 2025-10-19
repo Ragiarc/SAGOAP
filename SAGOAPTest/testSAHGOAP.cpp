@@ -1,8 +1,46 @@
 #include <chrono>
-
 #include "gtest/gtest.h"
 #include "SAHGOAP.h"
+#include "nlohmann/json.hpp"
 
+
+using json = nlohmann::json;
+
+json SerializeNode(const std::shared_ptr<SAHGOAP::internal::PlannerNode>& node, const SAHGOAP::WorldModel& worldModel) {
+    json result;
+    result["id"] = std::to_string(node->GetHash(worldModel));
+    
+    result["tasksRemaining"] = node->tasksRemaining.size();
+    result["gCost"] = node->gCost;
+    result["hCost"] = node->hCost;
+    result["fCost"] = node->fCost;
+
+    if (node->parent) {
+        try {
+            result["parentId"] = std::to_string(node->parent->GetHash(worldModel));
+            result["action"] = node->tasksRemaining.empty() ? "[GOAL]" : node->tasksRemaining.front()->GetName();
+        } catch (...) {
+            result["parentId"] = nullptr;
+            result["action"] = nullptr;
+        }
+    } else {
+        result["parentId"] = nullptr;
+        result["action"] = nullptr;
+    }
+
+    return result;
+}
+
+json SerializeGraph(const std::vector<std::shared_ptr<SAHGOAP::internal::PlannerNode>>& nodes, const SAHGOAP::WorldModel& worldModel) {
+    json graph = json::array();
+    for (auto& n : nodes)
+    {
+        if (!n->parent) printf("No parent\n");
+        else printf("Parent OK: %p\n", n->parent.get());
+        graph.push_back(SerializeNode(n, worldModel));
+    }
+    return graph;
+}
 // =============================================================================
 // 1. DEVELOPER-DEFINED COMPONENTS & GAME DATA
 // =============================================================================
@@ -18,6 +56,7 @@ struct InventoryComponent {
 struct WorldKnowledgeComponent {
     struct ResourceInfo { int location_id; int quantity; };
     std::map<int, ResourceInfo> resources; // ItemID -> Info
+    std::map<int, float> item_bootstrap_costs; 
 };
 
 struct RecipeKnowledgeComponent {
@@ -179,7 +218,7 @@ TEST_F(SAHGOAP_Test, FindsOneStepPlan) {
     // --- 2. ACT ---
     SAHGOAP::Planner planner;
     auto start_time = std::chrono::high_resolution_clock::now();
-    auto plan = planner.Plan(initialState, goalConditions, model, heuristic);
+    auto plan = planner.Plan(initialState, goalConditions, model, heuristic, NULL);
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << duration.count() << " microseconds" << std::endl;
@@ -320,7 +359,8 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
     [this](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {
         std::vector<SAHGOAP::ActionInstance> instances;
         const auto* recipes = state.GetComponent<RecipeKnowledgeComponent>();
-        if (!recipes) return instances;
+        const auto* world = state.GetComponent<WorldKnowledgeComponent>(); 
+        if (!recipes || !world) return instances;
 
         for (const auto& condition : goal) {
              if (condition.name == "Inventory.Has") {
@@ -334,6 +374,14 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
                     inst.name = "Craft(" + m.GetSymbolName(recipe.productId) + ")"; // e.g., "Craft(IronIngot)"
                     inst.cost = recipe.cost;
                     inst.params["recipeId"] = recipe.productId;
+
+                    int calculated_precondition_cost = 0;
+                    // Cost of ingredients
+                    for (const auto& [ing_id, quant] : recipe.ingredients) {
+                        if (world->item_bootstrap_costs.count(ing_id)) {
+                            calculated_precondition_cost += quant * world->item_bootstrap_costs.at(ing_id);
+                        }
+                    }
 
                     // --- DYNAMICALLY BUILD PRECONDITIONS AND EFFECTS ---
                     // It builds the lists from scratch, it doesn't use the schema's lists.
@@ -369,10 +417,26 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
     SAHGOAP::AgentState initialState;
     initialState.AddComponent<LocationComponent>()->location_id = loc_village;
     initialState.AddComponent<InventoryComponent>()->items = {{item_hammer, 1}, {item_wood, 2}};
-    initialState.AddComponent<WorldKnowledgeComponent>()->resources = {{item_ore, {loc_mines, 2}}};
+    auto& world_knowledge = *initialState.AddComponent<WorldKnowledgeComponent>();
+    world_knowledge.resources = {{item_ore, {loc_mines, 2}}};
+    auto& costs = world_knowledge.item_bootstrap_costs;
+    // Cost of IronOre = MoveTo(Mines) cost + GetItem cost = 10 + 1 = 11
+    costs[item_ore] = 11.0f; 
+    // Cost of Wood = (Assuming a GetItem from a forest location) = ~11
+    costs[item_wood] = 11.0f;
+
+    // Cost of IronIngot = Cost(1 Ore) + Cost(1 Wood) + Cost(Move to Forge) + Craft Cost
+    //                   = 11          + 11           + 10                    + 2 = 34
+    costs[item_ingot] = 34.0f;
+
+    // Cost of Sword = Cost(2 Ingots) + Have Hammer (0) + Cost(Move to Forge) + Craft Cost
+    //               = 2 * 34         + 0               + 10                    + 4 = 82
+    costs[item_sword] = 82.0f;
     auto& recipes = initialState.AddComponent<RecipeKnowledgeComponent>()->recipes;
     recipes[item_ingot] = {item_ingot, loc_forge, {{item_ore, 1}, {item_wood, 1}}, {}, 2};
     recipes[item_sword] = {item_sword, loc_forge, {{item_ingot, 2}}, {{item_hammer, 1}}, 4};
+    
+    
 
     // --- E. Define Goal ---
     SAHGOAP::StateGoal goalConditions = {
@@ -384,17 +448,25 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
     };
 
     // --- 2. ACT ---
+    std::vector<std::shared_ptr<SAHGOAP::internal::PlannerNode>> nodesCollected;
     SAHGOAP::Planner planner;
     auto start_time = std::chrono::high_resolution_clock::now();
-    auto planResult = planner.Plan(initialState, goalConditions, model, heuristic);
+    auto planResult = planner.Plan(initialState, goalConditions, model, heuristic,
+        [&](const std::shared_ptr<SAHGOAP::internal::PlannerNode>& node) {
+        nodesCollected.push_back(node);
+    });
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << duration.count() << " microseconds" << std::endl;
+
+    std::cout << SerializeGraph(nodesCollected, model).dump();
     // --- 3. ASSERT ---
     ASSERT_TRUE(planResult.has_value()) << "Planner failed to find the sword crafting plan.";
 
     
     const auto& plan = *planResult;
+    
+    
     
     
     // The plan with a smart GetItem generator:

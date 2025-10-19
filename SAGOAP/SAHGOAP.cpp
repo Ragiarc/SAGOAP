@@ -165,7 +165,34 @@ namespace SAHGOAP
         AchieveStateTask(StateGoal conditions) : targetConditions(std::move(conditions)) {}
         bool Decompose(const AgentState&, Goal&) const override { return false; /* Handled by planner */ }
         std::unique_ptr<BaseTask> Clone() const override {return std::make_unique<AchieveStateTask>(this->targetConditions); }
-        std::string GetName() const override { return "AchieveState"; }
+        std::string GetName() const override { if (targetConditions.empty()) {
+            return "AchieveState(EMPTY)";
+        }
+
+            std::string debug_name = "AchieveState(";
+            bool first_cond = true;
+            for (const auto& cond : targetConditions) {
+                if (!first_cond) {
+                    debug_name += ", ";
+                }
+                debug_name += cond.name;
+                debug_name += "(";
+                bool first_param = true;
+                for (const auto& param : cond.params) {
+                    if (!first_param) {
+                        debug_name += ",";
+                    }
+                    debug_name += param;
+                    first_param = false;
+                }
+                debug_name += ")";
+                first_cond = false;
+            }
+            debug_name += ")";
+            return debug_name;
+        }
+
+
     };
 
     class ExecuteActionTask : public BaseTask {
@@ -174,7 +201,27 @@ namespace SAHGOAP
         ExecuteActionTask(ActionInstance act) : action(std::move(act)) {}
         bool Decompose(const AgentState&, Goal&) const override { return false; /* Handled by planner */ }
         std::unique_ptr<BaseTask> Clone() const override { return std::make_unique<ExecuteActionTask>(action); }
-        std::string GetName() const override { return "Execute: " + action.name; }
+        std::string GetName() const override {
+            std::string debug_name = "Execute: " + action.name;
+            if (action.params.empty()) {
+                return debug_name;
+            }
+
+            debug_name += "(";
+            bool first = true;
+            for (const auto& [key, value] : action.params) {
+                if (!first) {
+                    debug_name += ", ";
+                }
+                // Note: We can't know the symbol name for 'value' here, and that's okay.
+                // Printing the key and the raw ID is still very informative.
+                debug_name += key + "=" + std::to_string(value);
+                first = false;
+            }
+            debug_name += ")";
+            return debug_name;
+        }
+        
     };
 
     namespace internal
@@ -183,40 +230,19 @@ namespace SAHGOAP
         // Planner Internals (Implementation Detail)
         // =============================================================================
 
-        struct PlannerNode {
-            AgentState currentState;
-            Goal tasksRemaining;
-            std::shared_ptr<ActionInstance> parentActionInstance;
-
-            float gCost = 0.0f;
-            float hCost = 0.0f;
-            float fCost = 0.0f;
-            std::shared_ptr<PlannerNode> parent = nullptr;
-        
-            void CalculateFCost() { fCost = gCost + hCost; }
+        void PlannerNode::CalculateFCost() { fCost = gCost + hCost; }
             // A more robust hash is needed for production.
-            size_t GetHash(const WorldModel& model) const {
+        size_t PlannerNode::GetHash(const WorldModel& model) const {
                 size_t stateHash = model.HashState(currentState);
                 
                 size_t goalHash = model.HashGoal(tasksRemaining);
-                for(const auto& task : tasksRemaining) {
-                    goalHash ^= std::hash<std::string>()(task->GetName()); // Simple name hash is usually sufficient
-                }
 
                 // 3. Combine them.
                 return stateHash ^ (goalHash + 0x9e3779b9 + (stateHash << 6) + (stateHash >> 2));
-            }
-        };
+        }
 
-        struct ComparePlannerNodes
+        size_t HashCondition(const Condition& cond)
         {
-            bool operator()(const std::shared_ptr<PlannerNode>& a, const std::shared_ptr<PlannerNode>& b) const {
-                if (std::abs(a->fCost - b->fCost) > 1e-6) return a->fCost > b->fCost;
-                return a->hCost > b->hCost;
-            }
-        };
-
-        size_t HashCondition(const Condition& cond) {
             size_t seed = std::hash<std::string>()(cond.name);
             seed ^= std::hash<int>()(static_cast<int>(cond.op)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             for (const auto& param : cond.params) {
@@ -224,7 +250,6 @@ namespace SAHGOAP
             }
             return seed;
         }
-
     } // namespace internal
 
     size_t WorldModel::HashGoal(const Goal& goal) const
@@ -260,12 +285,14 @@ namespace SAHGOAP
         return seed;
     }
 
-
+    
+    
     std::optional<std::vector<ActionInstance>> Planner::Plan(
         const AgentState& initialState,
         StateGoal& initialConditions,
         const WorldModel& worldModel,
-        HeuristicFunction heuristic) const
+        HeuristicFunction heuristic,
+        NodeCollector collector = nullptr) const
     {
 
         int nodes_generated = 0;
@@ -273,30 +300,30 @@ namespace SAHGOAP
         printf("\n[PLANNER START]\n---------------\n");
 
         heuristic = [&](const AgentState& state, const Goal& goal) -> float {
-            std::set<std::string> uniqueUnsatisfiedPreconditions;
-    
-            // This heuristic can now correctly dynamic_cast because it's inside the library.
+            float total_estimated_cost = 0.0f;
             for (const auto& task_ptr : goal) {
-                // We only care about the preconditions of actions we intend to execute.
                 if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(task_ptr.get())) {
                     const auto& action = executeTask->action;
+                    bool preconditionsMet = true;
                     for (const auto& condition : action.preconditions) {
-                        // Resolve the parameters for this specific condition instance.
                         auto params = ResolveParams(action, condition.params, worldModel);
                         const auto* cond_info = worldModel.GetConditionInfo(condition.name);
-                
-                        // Check if the condition is currently met.
-                        if (cond_info && params && !(cond_info->erased_func)(state, *params, condition.op)) {
-                            // Condition is NOT satisfied. Add its canonical representation to the set
-                            // to ensure we only count each unique unmet condition once.
-                            std::string key = condition.name;
-                            for(int p : *params) key += "_" + std::to_string(p);
-                            uniqueUnsatisfiedPreconditions.insert(key);
+                        if (!cond_info || !params || !(cond_info->erased_func)(state, *params, condition.op)) {
+                            preconditionsMet = false;
+                            break;
                         }
                     }
+
+                    if (preconditionsMet) {
+                        total_estimated_cost += action.cost;
+                    } else {
+                        total_estimated_cost += action.cost + action.precondition_cost;
+                    }
+                } else {
+                    total_estimated_cost += 1.0f; 
                 }
             }
-            return static_cast<float>(uniqueUnsatisfiedPreconditions.size());
+            return total_estimated_cost;
         };
         
         Goal initialGoal;
@@ -325,15 +352,19 @@ namespace SAHGOAP
             openSet.push(neighborNode);
             nodes_generated++;
 
-            const char* topTaskName = neighborNode->tasksRemaining.empty() ? "[GOAL]" : neighborNode->tasksRemaining.front()->GetName().c_str();
+            const std::string topTaskName = neighborNode->tasksRemaining.empty() ? "[GOAL]" : neighborNode->tasksRemaining.front()->GetName();
             printf("  [DECOMP] Pushing new node. Top Task: %s (g=%.1f, h=%.1f, f=%.1f)\n", 
-                   topTaskName, neighborNode->gCost, neighborNode->hCost, neighborNode->fCost);
+                   topTaskName.c_str(), neighborNode->gCost, neighborNode->hCost, neighborNode->fCost);
         };
 
         while (!openSet.empty()) {
             std::shared_ptr<internal::PlannerNode> currentNode = openSet.top();
             openSet.pop();
             nodes_expanded++;
+            if (collector)
+            {
+                collector(currentNode);
+            }
 
             
 
@@ -342,7 +373,17 @@ namespace SAHGOAP
                 printf("Total Nodes Generated: %d\n", nodes_generated);
                 printf("Total Nodes Expanded: %d\n", nodes_expanded);
                 printf("---------------\n");
-                
+
+                /*if (collector)
+                {
+                    // Pop all remaining nodes in the openSet into the collector
+                    while (!openSet.empty()) {
+                        collector(openSet.top());
+                        openSet.pop();
+                    }
+                    // Also collect the final node
+                    collector(currentNode);
+                }*/
                 std::vector<ActionInstance> finalPlan;
                 std::shared_ptr<internal::PlannerNode> pathNode = currentNode;
                 while (pathNode != nullptr && pathNode->parent != nullptr) {
@@ -377,9 +418,26 @@ namespace SAHGOAP
             // --- Case 1: AchieveStateTask ---
             if (auto* achieveTask = dynamic_cast<AchieveStateTask*>(currentTask.get()))
             {
+                // 1. Build a "shopping list" of all conditions we need to solve right now.
+                // Start with the conditions from the current AchieveStateTask.
+                StateGoal conditionsToConsider = achieveTask->targetConditions;
+
+                // 2. Look ahead to the next ExecuteActionTask and add its preconditions to our list.
+                // This allows the planner to make opportunistic, efficient choices.
+                for (const auto& nextTask : remainingTasks) {
+                    if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(nextTask.get())) {
+                        conditionsToConsider.insert(conditionsToConsider.end(),
+                                                    executeTask->action.preconditions.begin(),
+                                                    executeTask->action.preconditions.end());
+                        // We only look ahead to the very next primitive action.
+                        break; 
+                    }
+                }
+
+                // 3. From our shopping list, find out which conditions are actually unmet in the current state.
+                
                 StateGoal unsatisfiedConditions;
-                for (const auto& condition : achieveTask->targetConditions) {
-                    // We need to resolve params without an instance context here.
+                for (const auto& condition : conditionsToConsider) {
                     auto params = ResolveParams(std::nullopt, condition.params, worldModel);
                     const auto* cond_info = worldModel.GetConditionInfo(condition.name);
 
@@ -411,19 +469,16 @@ namespace SAHGOAP
                 // For each potential action, create a new branch where the next task is to EXECUTE that action.
                 while(!potentialActions.empty())
                 {
-                    auto action = potentialActions.back();
+                    auto action = std::move(potentialActions.back());
                     potentialActions.pop_back();
 
                     Goal decompTasks;
-                    AchieveStateTask requirements = action.preconditions;
-
-                    if(!requirements.targetConditions.empty())
-                    {
-                        decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(requirements)));
-                    }
                     decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(action)));
-
-                    for(auto& task : remainingTasks) decompTasks.push_back(task->Clone());
+        
+                    // Add the rest of the original plan tasks.
+                    for(auto& task : remainingTasks) {
+                        decompTasks.push_back(task->Clone());
+                    }
 
                     createDecompositionNode(currentNode, std::move(decompTasks));
                 }

@@ -73,6 +73,7 @@ namespace SAHGOAP
 	{
 		std::string name;
 		int cost;
+		int precondition_cost = 0;
 		std::map<std::string, int> params; // Still useful for debugging and identification
 		std::vector<Condition> preconditions;
 		std::vector<Effect> effects;
@@ -228,6 +229,43 @@ namespace SAHGOAP
 	// =============================================================================
 	// Hierarchical Forward Planner
 	// =============================================================================
+
+	namespace internal
+    {
+        // =============================================================================
+        // Planner Internals (Implementation Detail)
+        // =============================================================================
+
+        struct PlannerNode
+        {
+	        AgentState currentState;
+        	Goal tasksRemaining;
+        	std::shared_ptr<ActionInstance> parentActionInstance;
+
+        	float gCost = 0.0f;
+        	float hCost = 0.0f;
+        	float fCost = 0.0f;
+        	std::shared_ptr<PlannerNode> parent = nullptr;
+        
+        	void CalculateFCost();
+        	// A more robust hash is needed for production.
+        	size_t GetHash(const WorldModel& model) const;
+        };
+        struct ComparePlannerNodes
+        {
+        	bool operator()(const std::shared_ptr<PlannerNode>& a, const std::shared_ptr<PlannerNode>& b) const
+        	{
+        		if (std::abs(a->fCost - b->fCost) > 1e-6) return a->fCost > b->fCost;
+        		return a->hCost > b->hCost;
+        	}
+        };
+
+        size_t HashCondition(const Condition& cond);
+
+        
+
+    } // namespace internal
+	
 	std::optional<std::vector<int>> ResolveParams(const std::optional<ActionInstance>& inst, const std::vector<std::string>& param_strings, const WorldModel& model);
 	class ExecuteActionTask;
 	/*struct ResolvedAction
@@ -248,7 +286,7 @@ namespace SAHGOAP
 		std::vector<ResolvedCondition> resolved_preconditions;
 		std::vector<ResolvedEffect> resolved_effects;
 	};*/
-	
+	using NodeCollector = std::function<void(const std::shared_ptr<internal::PlannerNode>&)>;
 	class Planner
 	{
 	public:
@@ -259,7 +297,8 @@ namespace SAHGOAP
 			const AgentState& initialState,
 			StateGoal& initialConditions,
 			const WorldModel& worldModel,
-			HeuristicFunction heuristic) const;
+			HeuristicFunction heuristic,
+			NodeCollector collector) const;
 	};
 }
 #include "SAHGOAP.inl"
