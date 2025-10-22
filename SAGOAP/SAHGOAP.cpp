@@ -461,10 +461,15 @@ namespace SAHGOAP
                                               std::make_move_iterator(newInstances.begin()), 
                                               std::make_move_iterator(newInstances.end()));
                 }
+                
                 if (potentialActions.empty()) {
                     printf("  [DEAD END] No action generator could satisfy goal.\n");
                     continue; // Dead end.
                 }
+                // remove duplicate actions
+                std::sort(potentialActions.begin(), potentialActions.end());
+                potentialActions.erase(std::unique(potentialActions.begin(), potentialActions.end()), potentialActions.end());
+                
                 printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
                 // For each potential action, create a new branch where the next task is to EXECUTE that action.
                 while(!potentialActions.empty())

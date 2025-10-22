@@ -35,8 +35,6 @@ json SerializeGraph(const std::vector<std::shared_ptr<SAHGOAP::internal::Planner
     json graph = json::array();
     for (auto& n : nodes)
     {
-        if (!n->parent) printf("No parent\n");
-        else printf("Parent OK: %p\n", n->parent.get());
         graph.push_back(SerializeNode(n, worldModel));
     }
     return graph;

@@ -50,6 +50,16 @@ namespace SAHGOAP
 		std::string name;              // The registered name, e.g., "Inventory.Has"
 		std::vector<std::string> params; // Parameters referenced by name, e.g., ["$itemToGet", "1"]
 		ComparisonOperator op = ComparisonOperator::EqualTo;
+
+		// Manual comparison for std::sort and std::unique
+		bool operator<(const Condition& other) const {
+			if (name != other.name) return name < other.name;
+			if (op != other.op) return op < other.op;
+			return params < other.params;
+		}
+		bool operator==(const Condition& other) const {
+			return name == other.name && op == other.op && params == other.params;
+		}
 	};
 
 	/** @brief A data-only definition for a single state-modifying effect. */
@@ -57,6 +67,15 @@ namespace SAHGOAP
 	{
 		std::string name;              // The registered name, e.g., "Inventory.Add"
 		std::vector<std::string> params; // Parameters referenced by name, e.g., ["$itemToGet", "1"]
+
+		// Manual comparison for std::sort and std::unique
+		bool operator<(const Effect& other) const {
+			if (name != other.name) return name < other.name;
+			return params < other.params;
+		}
+		bool operator==(const Effect& other) const {
+			return name == other.name && params == other.params;
+		}
 	};
 	
 	/*struct ActionSchema
@@ -77,6 +96,22 @@ namespace SAHGOAP
 		std::map<std::string, int> params; // Still useful for debugging and identification
 		std::vector<Condition> preconditions;
 		std::vector<Effect> effects;
+
+		// Added to allow sorting and de-duplication of actions
+		bool operator<(const ActionInstance& other) const {
+			if (name != other.name) return name < other.name;
+			if (cost != other.cost) return cost < other.cost;
+			if (params != other.params) return params < other.params;
+			if (preconditions != other.preconditions) return preconditions < other.preconditions;
+			return effects < other.effects;
+		}
+		bool operator==(const ActionInstance& other) const {
+			return name == other.name &&
+				   cost == other.cost &&
+				   params == other.params &&
+				   preconditions == other.preconditions &&
+				   effects == other.effects;
+		}
 	};
 
 	const std::map<std::string, SAHGOAP::ComparisonOperator> operator_map =
