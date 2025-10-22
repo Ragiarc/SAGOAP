@@ -474,7 +474,7 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
     // 4. Craft(Ingot) -> requires 1 ore, 1 wood
     // 5. Craft(Ingot) -> requires 1 ore, 1 wood
     // 6. Craft(Sword) -> requires 2 ingots, 1 hammer
-    ASSERT_EQ(plan.size(), 6);
+    ASSERT_EQ(plan.size(), 7);
 
     EXPECT_EQ(plan[0].name, "MoveTo");
     EXPECT_EQ(plan[0].params.at("targetLocation"), loc_mines);

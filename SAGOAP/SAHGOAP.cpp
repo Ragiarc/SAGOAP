@@ -330,7 +330,7 @@ namespace SAHGOAP
         initialGoal.push_back(std::make_unique<AchieveStateTask>(initialConditions));
         
         std::priority_queue<std::shared_ptr<internal::PlannerNode>, std::vector<std::shared_ptr<internal::PlannerNode>>, internal::ComparePlannerNodes> openSet;
-        std::unordered_set<size_t> closedSet;
+        std::unordered_map<size_t, float> closedSet;
         
         auto startNode = std::make_shared<internal::PlannerNode>();
         startNode->currentState = initialState;
@@ -360,11 +360,7 @@ namespace SAHGOAP
         while (!openSet.empty()) {
             std::shared_ptr<internal::PlannerNode> currentNode = openSet.top();
             openSet.pop();
-            nodes_expanded++;
-            if (collector)
-            {
-                collector(currentNode);
-            }
+            
 
             
 
@@ -401,12 +397,22 @@ namespace SAHGOAP
                    currentNode->tasksRemaining.size(), currentNode->tasksRemaining.front()->GetName().c_str());
             
             size_t currentHash = currentNode->GetHash(worldModel);
-            if (closedSet.contains(currentHash))
-            {
-                printf("  [SKIP] Node is already in closed set.\n");
-                continue;
+            auto it = closedSet.find(currentHash);
+            if (it != closedSet.end()) {
+                // If we've been to this state before, only proceed if the new path is cheaper.
+                if (currentNode->gCost >= it->second) {
+                    printf("  [SKIP] Node is already in closed set with a better or equal gCost (%.1f >= %.1f).\n", currentNode->gCost, it->second);
+                    continue;
+                }
             }
-            closedSet.insert(currentHash);
+            // Add/update the node in the closed set with its gCost.
+            closedSet[currentHash] = currentNode->gCost;
+
+            nodes_expanded++;
+            if (collector)
+            {
+                collector(currentNode);
+            }
 
             auto currentTask = currentNode->tasksRemaining.front()->Clone();
             Goal remainingTasks;
