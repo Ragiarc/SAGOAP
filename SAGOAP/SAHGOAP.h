@@ -280,10 +280,11 @@ namespace SAHGOAP
         	float gCost = 0.0f;
         	float hCost = 0.0f;
         	float fCost = 0.0f;
+        	mutable size_t hash = 0;
         	std::shared_ptr<PlannerNode> parent = nullptr;
         
         	void CalculateFCost();
-        	// A more robust hash is needed for production.
+
         	size_t GetHash(const WorldModel& model) const;
         };
         struct ComparePlannerNodes

@@ -18,7 +18,21 @@ json SerializeNode(const std::shared_ptr<SAHGOAP::internal::PlannerNode>& node, 
     if (node->parent) {
         try {
             result["parentId"] = std::to_string(node->parent->GetHash(worldModel));
-            result["action"] = node->tasksRemaining.empty() ? "[GOAL]" : node->tasksRemaining.front()->GetName();
+            std::string topTaskName;
+
+            if (node->tasksRemaining.empty()) {
+                topTaskName = "[GOAL]";
+            } else {
+                std::ostringstream oss;
+                bool first = true;
+                for (const auto& task : node->tasksRemaining) {
+                    if (!first) oss << " -> "; // separator
+                    oss << task->GetName();
+                    first = false;
+                }
+                topTaskName = oss.str();
+            }
+            result["action"] = topTaskName;
         } catch (...) {
             result["parentId"] = nullptr;
             result["action"] = nullptr;
@@ -499,4 +513,263 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
 
     EXPECT_EQ(plan[6].name, "Craft");
     EXPECT_EQ(plan[6].params.at("recipeId"), item_sword);
+}
+
+
+TEST_F(SAHGOAP_Test, Planner_GetOreInCorrectOrder) {
+    // --- 1. ARRANGE ---
+
+    // --- A. Register all Conditions, Effects, and Goal Appliers ---
+    model.RegisterCondition<LocationComponent>("Location.Is", 
+        [](const LocationComponent& comp, const std::vector<int>& params, SAHGOAP::ComparisonOperator op) {
+            return op == SAHGOAP::ComparisonOperator::EqualTo && comp.location_id == params[0];
+        });
+    model.RegisterEffect<LocationComponent>("Location.Set",
+        [](LocationComponent& comp, const std::vector<int>& params) {
+            comp.location_id = params[0];
+        });
+    model.RegisterGoalApplier("Location.Is", 
+        [](SAHGOAP::AgentState& goalState, const std::vector<int>& params) {
+            goalState.AddComponent<LocationComponent>()->location_id = params[0];
+        });
+
+    model.RegisterCondition<InventoryComponent>("Inventory.Has",
+        [](const InventoryComponent& comp, const std::vector<int>& params, SAHGOAP::ComparisonOperator op) {
+            int item_id = params[0];
+            int quantity = params[1];
+            auto it = comp.items.find(item_id);
+            int current_quant = (it == comp.items.end()) ? 0 : it->second;
+            return op == SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo && current_quant >= quantity;
+        });
+    model.RegisterEffect<InventoryComponent>("Inventory.Add",
+        [](InventoryComponent& comp, const std::vector<int>& params) {
+            comp.items[params[0]] += params[1];
+        });
+    model.RegisterGoalApplier("Inventory.Has",
+        [](SAHGOAP::AgentState& goalState, const std::vector<int>& params) {
+            goalState.AddComponent<InventoryComponent>()->items[params[0]] = params[1];
+        });
+    
+    model.RegisterEffect<WorldKnowledgeComponent>("World.UpdateResource",
+        [](WorldKnowledgeComponent& comp, const std::vector<int>& params) {
+            comp.resources[params[0]].quantity += params[1];
+        });
+
+    // --- B. Register Action Instance Generators ---
+    model.RegisterActionGenerator(
+        [](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {
+            std::vector<SAHGOAP::ActionInstance> instances;
+            for (const auto& condition : goal) {
+                if (condition.name == "Location.Is") {
+                    int target_loc_id = std::stoi(condition.params[0]);
+                    if (const auto* currentLoc = state.GetComponent<LocationComponent>()) {
+                         if (target_loc_id != currentLoc->location_id) {
+                             SAHGOAP::ActionInstance inst;
+                             inst.name = "MoveTo";
+                             inst.cost = 10; // for now
+                             inst.params["targetLocation"] = target_loc_id;
+                             // It copies the preconditions and effects from the schema.
+                             inst.preconditions = {}; 
+                             inst.effects = {{"Location.Set", {"$targetLocation"}}};
+                             instances.push_back(inst);
+                            return instances;
+                         }
+                    }
+                }
+            }
+            return instances;
+        });
+            
+    model.RegisterActionGenerator(
+    [this](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {
+        std::vector<SAHGOAP::ActionInstance> instances;
+
+        const auto* world = state.GetComponent<WorldKnowledgeComponent>();
+        if (!world) return instances;
+
+        // Look for an "Inventory.Has" condition in the goal.
+        for (const auto& condition : goal) {
+            if (condition.name == "Inventory.Has" && condition.op == SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo) {
+                // Assuming parameter at index 0 is the item ID
+                int item_id = std::stoi(condition.params[0]);
+                int needed_quant = std::stoi(condition.params[1]);
+                
+                int current_quant = 0;
+                if(const auto* inv = state.GetComponent<InventoryComponent>()) {
+                    auto it = inv->items.find(item_id);
+                    if (it != inv->items.end()) current_quant = it->second;
+                }
+
+                // Is the goal for this item already met? If so, we don't need to generate an action.
+                if (current_quant >= needed_quant) {
+                    continue;
+                }
+
+                // We need this item. Check if the world has it.
+                auto res_it = world->resources.find(item_id);
+                if (res_it != world->resources.end() && res_it->second.quantity > 0) {
+                    int quantityToGet = std::min(needed_quant - current_quant, res_it->second.quantity);
+                    // --- Build the complete ActionInstance ---
+                    SAHGOAP::ActionInstance inst;
+
+                    // 1. Copy the template data from the schema
+                    inst.name = "GetItem";
+                    inst.cost = 1;
+                    inst.preconditions.push_back({
+                        "Location.Is", 
+                        {std::to_string(res_it->second.location_id)}, 
+                        SAHGOAP::ComparisonOperator::EqualTo
+                    });
+                    inst.effects.push_back({
+                        "Inventory.Add", 
+                        {std::to_string(item_id), std::to_string(quantityToGet)} // Use parameter references
+                    });
+                    inst.effects.push_back({
+                        "World.UpdateResource",
+                        {"$itemToGet", std::to_string(-quantityToGet)} // Effect can be a literal value
+                    });
+                    
+                    // 2. Fill in the specific parameters for THIS instance
+                    inst.params["itemToGet"] = item_id;
+                    inst.params["quantityToGet"] = quantityToGet;
+                    inst.params["sourceLocation"] = res_it->second.location_id;
+                    
+                    instances.push_back(std::move(inst));
+                }
+            }
+        }
+        return instances;
+    });
+
+   model.RegisterActionGenerator(
+    [this](const SAHGOAP::AgentState& state, const SAHGOAP::StateGoal& goal, const SAHGOAP::WorldModel& m) {
+        std::vector<SAHGOAP::ActionInstance> instances;
+        const auto* recipes = state.GetComponent<RecipeKnowledgeComponent>();
+        const auto* world = state.GetComponent<WorldKnowledgeComponent>(); 
+        if (!recipes || !world) return instances;
+
+        for (const auto& condition : goal) {
+             if (condition.name == "Inventory.Has") {
+                int item_id_to_craft = std::stoi(condition.params[0]);
+                
+                auto recipe_it = recipes->recipes.find(item_id_to_craft);
+                if (recipe_it != recipes->recipes.end()) {
+                    const auto& recipe = recipe_it->second;
+                    
+                    SAHGOAP::ActionInstance inst;
+                    inst.name = "Craft(" + m.GetSymbolName(recipe.productId) + ")"; // e.g., "Craft(IronIngot)"
+                    inst.cost = recipe.cost;
+                    inst.params["recipeId"] = recipe.productId;
+
+                    int calculated_precondition_cost = 0;
+                    // Cost of ingredients
+                    for (const auto& [ing_id, quant] : recipe.ingredients) {
+                        if (world->item_bootstrap_costs.count(ing_id)) {
+                            calculated_precondition_cost += quant * world->item_bootstrap_costs.at(ing_id);
+                        }
+                    }
+
+                    // --- DYNAMICALLY BUILD PRECONDITIONS AND EFFECTS ---
+                    // It builds the lists from scratch, it doesn't use the schema's lists.
+                    inst.preconditions.push_back({"Location.Is", {std::to_string(recipe.locationId)}});
+                    for (const auto& [ing_id, quant] : recipe.ingredients) {
+                        inst.preconditions.push_back({"Inventory.Has", {std::to_string(ing_id), std::to_string(quant)}, SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo});
+                    }
+                    inst.effects.push_back({"Inventory.Add", {std::to_string(recipe.productId), "1"}});
+                    for (const auto& [ing_id, quant] : recipe.ingredients) {
+                        inst.effects.push_back({"Inventory.Add", {std::to_string(ing_id), std::to_string(-quant)}});
+                    }
+                    
+                    instances.push_back(std::move(inst));
+                }
+             }
+        }
+        return instances;
+    });
+
+    SAHGOAP::AgentState initialState;
+    initialState.AddComponent<LocationComponent>()->location_id = loc_village;
+    initialState.AddComponent<InventoryComponent>()->items = {{item_hammer, 1}, {item_wood, 2}};
+    auto& world_knowledge = *initialState.AddComponent<WorldKnowledgeComponent>();
+    world_knowledge.resources = {{item_ore, {loc_mines, 2}}};
+    auto& costs = world_knowledge.item_bootstrap_costs;
+    // Cost of IronOre = MoveTo(Mines) cost + GetItem cost = 10 + 1 = 11
+    costs[item_ore] = 11.0f; 
+    // Cost of Wood = (Assuming a GetItem from a forest location) = ~11
+    costs[item_wood] = 11.0f;
+
+    // Cost of IronIngot = Cost(1 Ore) + Cost(1 Wood) + Cost(Move to Forge) + Craft Cost
+    //                   = 11          + 11           + 10                    + 2 = 34
+    costs[item_ingot] = 34.0f;
+
+    // Cost of Sword = Cost(2 Ingots) + Have Hammer (0) + Cost(Move to Forge) + Craft Cost
+    //               = 2 * 34         + 0               + 10                    + 4 = 82
+    costs[item_sword] = 82.0f;
+    auto& recipes = initialState.AddComponent<RecipeKnowledgeComponent>()->recipes;
+    recipes[item_ingot] = {item_ingot, loc_forge, {{item_ore, 1}, {item_wood, 1}}, {}, 2};
+    recipes[item_sword] = {item_sword, loc_forge, {{item_ingot, 2}}, {{item_hammer, 1}}, 4};
+    
+    
+
+    // --- E. Define Goal ---
+    SAHGOAP::StateGoal goalConditions = {
+        {"Inventory.Has", {std::to_string(item_ingot), "2"}, SAHGOAP::ComparisonOperator::GreaterThanOrEqualTo}
+    };
+    
+    SAHGOAP::Planner::HeuristicFunction heuristic = [](const SAHGOAP::AgentState&, const SAHGOAP::Goal& goal) {
+        return (float)goal.size();
+    };
+
+    // --- 2. ACT ---
+    std::vector<std::shared_ptr<SAHGOAP::internal::PlannerNode>> nodesCollected;
+    SAHGOAP::Planner planner;
+    auto start_time = std::chrono::high_resolution_clock::now();
+    auto planResult = planner.Plan(initialState, goalConditions, model, heuristic,
+        [&](const std::shared_ptr<SAHGOAP::internal::PlannerNode>& node) {
+        nodesCollected.push_back(node);
+    });
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    std::cout << duration.count() << " microseconds" << std::endl;
+
+    std::cout << SerializeGraph(nodesCollected, model).dump();
+    // --- 3. ASSERT ---
+    ASSERT_TRUE(planResult.has_value()) << "Planner failed to find a plan.";
+
+    
+    const auto& plan = *planResult;
+    
+    
+    
+    
+    // The plan with a smart GetItem generator:
+    // 1. Move(Mines)
+    // 2. Get(Ore, 1)
+    // 3. Get(Ore, 1)
+    // 4. Move(Forge)
+    // 5. Craft(Ingot) -> requires 1 ore, 1 wood
+    // 6. Craft(Ingot) -> requires 1 ore, 1 wood
+    ASSERT_EQ(plan.size(), 6);
+
+    EXPECT_EQ(plan[0].name, "MoveTo");
+    EXPECT_EQ(plan[0].params.at("targetLocation"), loc_mines);
+
+    EXPECT_EQ(plan[1].name, "GetItem");
+    EXPECT_EQ(plan[1].params.at("itemToGet"), item_ore);
+    EXPECT_EQ(plan[1].params.at("quantityToGet"), 1);
+
+    EXPECT_EQ(plan[2].name, "GetItem");
+    EXPECT_EQ(plan[2].params.at("itemToGet"), item_ore);
+    EXPECT_EQ(plan[2].params.at("quantityToGet"), 1);
+
+    EXPECT_EQ(plan[3].name, "MoveTo");
+    EXPECT_EQ(plan[3].params.at("targetLocation"), loc_forge);
+
+    // The craft actions might be generic "Craft" schemas, so we check the recipeId param.
+    EXPECT_EQ(plan[4].name, "Craft");
+    EXPECT_EQ(plan[4].params.at("recipeId"), item_ingot);
+
+    EXPECT_EQ(plan[5].name, "Craft");
+    EXPECT_EQ(plan[5].params.at("recipeId"), item_ingot);
+    
 }

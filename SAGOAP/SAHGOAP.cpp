@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <set>
 #include <string>
+#include <sstream>
 
 namespace SAHGOAP
 {
@@ -233,12 +234,21 @@ namespace SAHGOAP
         void PlannerNode::CalculateFCost() { fCost = gCost + hCost; }
             // A more robust hash is needed for production.
         size_t PlannerNode::GetHash(const WorldModel& model) const {
-                size_t stateHash = model.HashState(currentState);
-                
-                size_t goalHash = model.HashGoal(tasksRemaining);
+            if (this->hash != 0) return this->hash;
+            
+            size_t stateHash = model.HashState(currentState);
+            
+            size_t goalHash = model.HashGoal(tasksRemaining);
 
-                // 3. Combine them.
-                return stateHash ^ (goalHash + 0x9e3779b9 + (stateHash << 6) + (stateHash >> 2));
+            //size_t parentHash = 0;
+            //if (this->parent && this->parent->hash != 0) parentHash = this->parent->hash;
+            
+            size_t combinedHash = stateHash;
+            combinedHash ^= goalHash + 0x9e3779b9 + (combinedHash << 6) + (combinedHash >> 2);
+            //combinedHash ^= parentHash + 0x9e3779b9 + (combinedHash << 6) + (combinedHash >> 2);
+
+            this->hash = combinedHash;
+            return combinedHash;
         }
 
         size_t HashCondition(const Condition& cond)
@@ -352,34 +362,35 @@ namespace SAHGOAP
             openSet.push(neighborNode);
             nodes_generated++;
 
-            const std::string topTaskName = neighborNode->tasksRemaining.empty() ? "[GOAL]" : neighborNode->tasksRemaining.front()->GetName();
-            printf("  [DECOMP] Pushing new node. Top Task: %s (g=%.1f, h=%.1f, f=%.1f)\n", 
+            std::string topTaskName;
+
+            if (neighborNode->tasksRemaining.empty()) {
+                topTaskName = "[GOAL]";
+            } else {
+                std::ostringstream oss;
+                bool first = true;
+                for (const auto& task : neighborNode->tasksRemaining) {
+                    if (!first) oss << " -> "; // separator
+                    oss << task->GetName();
+                    first = false;
+                }
+                topTaskName = oss.str();
+            }
+            printf("  [DECOMP] Pushing new node. Remaining Goal(Tasks): %s, (g=%.1f, h=%.1f, f=%.1f)\n", 
                    topTaskName.c_str(), neighborNode->gCost, neighborNode->hCost, neighborNode->fCost);
         };
 
-        while (!openSet.empty()) {
+        while (!openSet.empty())
+        {
             std::shared_ptr<internal::PlannerNode> currentNode = openSet.top();
             openSet.pop();
-            
 
-            
-
-            if (currentNode->tasksRemaining.empty()) {
+            if (currentNode->tasksRemaining.empty() || nodes_expanded > 50) {
                 printf("---------------\n[PLANNER SUCCESS]\n");
                 printf("Total Nodes Generated: %d\n", nodes_generated);
                 printf("Total Nodes Expanded: %d\n", nodes_expanded);
                 printf("---------------\n");
-
-                /*if (collector)
-                {
-                    // Pop all remaining nodes in the openSet into the collector
-                    while (!openSet.empty()) {
-                        collector(openSet.top());
-                        openSet.pop();
-                    }
-                    // Also collect the final node
-                    collector(currentNode);
-                }*/
+                
                 std::vector<ActionInstance> finalPlan;
                 std::shared_ptr<internal::PlannerNode> pathNode = currentNode;
                 while (pathNode != nullptr && pathNode->parent != nullptr) {
@@ -436,7 +447,11 @@ namespace SAHGOAP
                                                     executeTask->action.preconditions.begin(),
                                                     executeTask->action.preconditions.end());
                         // We only look ahead to the very next primitive action.
-                        break; 
+                        //break; 
+                    }
+                    else {
+                        // Stop looking ahead if we hit a non-primitive task (e.g., another AchieveStateTask)
+                        break;
                     }
                 }
 
@@ -485,7 +500,8 @@ namespace SAHGOAP
 
                     Goal decompTasks;
                     decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(action)));
-        
+                    // Re-evaluate the original goal after the action is done.
+                    decompTasks.push_back(currentTask->Clone());
                     // Add the rest of the original plan tasks.
                     for(auto& task : remainingTasks) {
                         decompTasks.push_back(task->Clone());
@@ -497,74 +513,174 @@ namespace SAHGOAP
             // --- Case 2: ExecuteActionTask ---
             // This branch handles tasks that are NOT AchieveStateTask.
             // It can decompose into a list of sub-tasks.
-            else if (auto* executeTask = dynamic_cast<ExecuteActionTask*>(currentTask.get())) {
-                const ActionInstance& instance = executeTask->action;
-                bool preconditionsMet = true;
-                for (const auto& cond_schema : instance.preconditions) {
+            else if (auto* executeTask = dynamic_cast<ExecuteActionTask*>(currentTask.get()))
+            {
+                bool currentActionPreconditionsMet = true;
+                for (const auto& cond_schema : executeTask->action.preconditions) {
                     const auto* cond_info = worldModel.GetConditionInfo(cond_schema.name);
-                    auto params = ResolveParams(instance, cond_schema.params, worldModel);
+                    auto params = ResolveParams(executeTask->action, cond_schema.params, worldModel);
                     if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, cond_schema.op)) {
-                        preconditionsMet = false;
+                        currentActionPreconditionsMet = false;
                         break;
                     }
                 }
 
-                if (preconditionsMet) {
-                    printf("  [EXECUTE] Preconditions met for '%s'. Applying effects.\n", instance.name.c_str());
+                if (!currentActionPreconditionsMet) {
+                    // --- PRECONDITIONS NOT MET ---
+                    // This is where the planner needs to be strategic.
+                    
+                    // BRANCH 1: The "Greedy" path. Solve only for the immediate action's needs.
+                    printf("  [DECOMP-GREEDY] Preconditions not met for '%s'. Decomposing to achieve them.\n", executeTask->action.name.c_str());
+                    {
+                        Goal decompTasks;
+                        decompTasks.push_back(std::make_unique<AchieveStateTask>(executeTask->action.preconditions));    
+                        decompTasks.push_back(currentTask->Clone());
+                        for (auto& task : remainingTasks) {
+                            decompTasks.push_back(task->Clone());
+                        }
+                        createDecompositionNode(currentNode, std::move(decompTasks));
+                    }
+                    continue;
+                    // BRANCH 2: The "Strategic" path. Look ahead and solve for the entire sequence.
+                    printf("  [DECOMP-STRATEGIC] Simulating future tasks to find all required preconditions...\n");
+                    StateGoal allNeededPreconditions;
+                    AgentState simulatedState = currentNode->currentState; // Start simulation from current state.
+
+                    // Create a temporary list of tasks to simulate, starting with the current one.
+                    std::vector<const BaseTask*> tasksToSimulate;
+                    tasksToSimulate.push_back(currentTask.get());
+                    for (const auto& task : remainingTasks) {
+                        tasksToSimulate.push_back(task.get());
+                    }
+
+                    // --- NEW SIMULATION LOOP ---
+                    for (const auto* taskToSim : tasksToSimulate) {
+                        if (const auto* nextExecuteTask = dynamic_cast<const ExecuteActionTask*>(taskToSim)) {
+                            // Step 1: Check preconditions against the CURRENT simulated state.
+                            // If a precondition isn't met in our simulation, we need to solve for it.
+                            for (const auto& cond : nextExecuteTask->action.preconditions) {
+                                auto params = ResolveParams(nextExecuteTask->action, cond.params, worldModel);
+                                const auto* cond_info = worldModel.GetConditionInfo(cond.name);
+                                if (!cond_info || !params || !(cond_info->erased_func)(simulatedState, *params, cond.op)) {
+                                    allNeededPreconditions.push_back(cond);
+                                }
+                            }
+
+                            // Step 2: Apply effects to the simulated state for the NEXT iteration.
+                            for (const auto& effect : nextExecuteTask->action.effects) {
+                                if (const auto* effect_info = worldModel.GetEffectInfo(effect.name)) {
+                                    auto params = ResolveParams(nextExecuteTask->action, effect.params, worldModel);
+                                    if (params) (effect_info->erased_func)(simulatedState, *params);
+                                }
+                            }
+                        } else if (const auto* nextAchieveTask = dynamic_cast<const AchieveStateTask*>(taskToSim)) {
+                            // We've hit a high-level goal. Check which parts of it are not already satisfied
+                            // by our simulated sequence of actions.
+                            for (const auto& cond : nextAchieveTask->targetConditions) {
+                                auto params = ResolveParams(std::nullopt, cond.params, worldModel);
+                                const auto* cond_info = worldModel.GetConditionInfo(cond.name);
+                                if (!cond_info || !params || !(cond_info->erased_func)(simulatedState, *params, cond.op)) {
+                                    allNeededPreconditions.push_back(cond);
+                                }
+                            }
+                            break; // Lookahead stops at the first AchieveState task.
+                        } else {
+                            // Stop at any other complex task type.
+                            break;
+                        }
+                    }
+
+                    // Now, filter the massive list of preconditions to only those that are ACTUALLY unmet in the REAL current state.
+                    StateGoal futureUnmetPreconditions;
+                     for(const auto& cond : allNeededPreconditions) {
+                        auto params = ResolveParams(std::nullopt, cond.params, worldModel);
+                        const auto* cond_info = worldModel.GetConditionInfo(cond.name);
+                        if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, cond.op)) {
+                            futureUnmetPreconditions.push_back(cond);
+                        }
+                    }
+                    std::sort(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end());
+                    futureUnmetPreconditions.erase(std::unique(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end()), futureUnmetPreconditions.end());
+
+                    // Only create a strategic branch if it offers a different (larger) goal than the greedy branch.
+                    if (!futureUnmetPreconditions.empty()) {
+                        printf("  [DECOMP-STRATEGIC] Found %zu total unmet preconditions. Creating strategic branches.\n", futureUnmetPreconditions.size());
+                        // Generate actions that can satisfy the unmet conditions.
+                        std::vector<ActionInstance> potentialActions;
+                        for (const auto& generator : worldModel.GetActionGenerators()) {
+                            auto newInstances = generator(currentNode->currentState, futureUnmetPreconditions, worldModel);
+                            potentialActions.insert(potentialActions.end(), 
+                                                      std::make_move_iterator(newInstances.begin()), 
+                                                      std::make_move_iterator(newInstances.end()));
+                        }
+                        
+                        if (potentialActions.empty()) {
+                            printf("  [DEAD END] No action generator could satisfy goal.\n");
+                            continue; // Dead end.
+                        }
+                        // remove duplicate actions
+                        std::sort(potentialActions.begin(), potentialActions.end());
+                        potentialActions.erase(std::unique(potentialActions.begin(), potentialActions.end()), potentialActions.end());
+                        
+                        printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
+                        // For each potential action, create a new branch where the next task is to EXECUTE that action.
+                        while(!potentialActions.empty())
+                        {
+                            auto action = std::move(potentialActions.back());
+                            potentialActions.pop_back();
+
+                            Goal decompTasks;
+                            decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(action)));
+                            // Re-evaluate the original goal after the action is done.
+                            decompTasks.push_back(currentTask->Clone());
+                            // Add the rest of the original plan tasks.
+                            for(auto& task : remainingTasks) {
+                                decompTasks.push_back(task->Clone());
+                            }
+
+                            createDecompositionNode(currentNode, std::move(decompTasks));
+                        }
+                    }
+                }
+                else
+                {
+                    // --- PRECONDITIONS ARE MET ---
+                    // If we reach here, the current action IS executable. We only need to execute it.
+                    printf("  [EXECUTE] Preconditions met for '%s'. Applying effects.\n", executeTask->action.name.c_str());
                     AgentState nextState = currentNode->currentState;
-                    for (const auto& effect_schema : instance.effects) {
+                    for (const auto& effect_schema : executeTask->action.effects) {
                         const auto* effect_info = worldModel.GetEffectInfo(effect_schema.name);
-                        auto params = ResolveParams(instance, effect_schema.params, worldModel);
+                        auto params = ResolveParams(executeTask->action, effect_schema.params, worldModel);
                         if (effect_info && params) {
                             (effect_info->erased_func)(nextState, *params);
                         }
                     }
-
                     auto neighborNode = std::make_shared<internal::PlannerNode>();
                     neighborNode->currentState = std::move(nextState);
                     neighborNode->tasksRemaining = std::move(remainingTasks);
                     neighborNode->parent = currentNode;
-                    neighborNode->parentActionInstance = std::make_shared<ActionInstance>(instance);
-                    neighborNode->gCost = currentNode->gCost + instance.cost;
+                    neighborNode->parentActionInstance = std::make_shared<ActionInstance>(executeTask->action);
+                    neighborNode->gCost = currentNode->gCost + executeTask->action.cost;
                     neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
                     neighborNode->CalculateFCost();
                     openSet.push(neighborNode);
                     nodes_generated++;
                     printf("  [APPLY] Created new state node (f=%.1f)\n", neighborNode->fCost);
-                } else {
-                    // PRECONDITIONS NOT MET: We need to create a sub-goal!
-                    printf("  [DECOMP] Preconditions not met for '%s'. Decomposing to achieve them.\n", instance.name.c_str());
-                        
-                    // Create a new task list for the decomposition.
-                    Goal decompTasks;
-                        
-                    // a. Add a task to achieve the unmet requirements.
-                    //decompTasks.push_back(std::make_unique<AchieveStateTask>(std::move(instance.preconditions)));
-                    decompTasks.push_back(std::make_unique<AchieveStateTask>(instance.preconditions));    
-                    // b. Add the original task back so we can try it again later.
-                    decompTasks.push_back(currentTask->Clone());
-                        
-                    // c. Add the rest of the parent's plan.
+                }
+            }
+        
+                // --- Case 3: Custom, user-defined complex task ---
+                else {
+                    std::vector<std::unique_ptr<BaseTask>> subTasks;
                     for (auto& task : remainingTasks) {
-                        decompTasks.push_back(task->Clone());
+                        subTasks.push_back(task->Clone());
                     }
-
-                    // Create a neighbor node that will attempt this new sub-plan.
-                    // The world state and plan-so-far do not change yet.
-                    createDecompositionNode(currentNode, std::move(decompTasks));
-                }
-            }
-            // --- Case 3: Custom, user-defined complex task ---
-            else {
-                std::vector<std::unique_ptr<BaseTask>> subTasks;
-                for (auto& task : remainingTasks) {
-                    subTasks.push_back(task->Clone());
-                }
                     
-                createDecompositionNode(currentNode, std::move(subTasks));
+                    createDecompositionNode(currentNode, std::move(subTasks));
+                }
             }
+            printf("---------------\n[PLANNER FAILED]\nTotal Nodes Generated: %d\nTotal Nodes Expanded: %d\n---------------\n", nodes_generated, nodes_expanded);
+            return std::nullopt;
         }
-        printf("---------------\n[PLANNER FAILED]\nTotal Nodes Generated: %d\nTotal Nodes Expanded: %d\n---------------\n", nodes_generated, nodes_expanded);
-        return std::nullopt;
     }
-}
+
