@@ -505,13 +505,13 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
     EXPECT_EQ(plan[3].params.at("targetLocation"), loc_forge);
 
     // The craft actions might be generic "Craft" schemas, so we check the recipeId param.
-    EXPECT_EQ(plan[4].name, "Craft");
+    EXPECT_EQ(plan[4].name, "Craft(IronIngot)");
     EXPECT_EQ(plan[4].params.at("recipeId"), item_ingot);
 
-    EXPECT_EQ(plan[5].name, "Craft");
+    EXPECT_EQ(plan[5].name, "Craft(IronIngot)");
     EXPECT_EQ(plan[5].params.at("recipeId"), item_ingot);
 
-    EXPECT_EQ(plan[6].name, "Craft");
+    EXPECT_EQ(plan[6].name, "Craft(IronIngot)");
     EXPECT_EQ(plan[6].params.at("recipeId"), item_sword);
 }
 
@@ -766,10 +766,10 @@ TEST_F(SAHGOAP_Test, Planner_GetOreInCorrectOrder) {
     EXPECT_EQ(plan[3].params.at("targetLocation"), loc_forge);
 
     // The craft actions might be generic "Craft" schemas, so we check the recipeId param.
-    EXPECT_EQ(plan[4].name, "Craft");
+    EXPECT_EQ(plan[4].name, "Craft(IronIngot)");
     EXPECT_EQ(plan[4].params.at("recipeId"), item_ingot);
 
-    EXPECT_EQ(plan[5].name, "Craft");
+    EXPECT_EQ(plan[5].name, "Craft(IronIngot)");
     EXPECT_EQ(plan[5].params.at("recipeId"), item_ingot);
     
 }

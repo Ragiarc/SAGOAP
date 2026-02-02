@@ -376,8 +376,8 @@ namespace SAHGOAP
                 }
                 topTaskName = oss.str();
             }
-            printf("  [DECOMP] Pushing new node. Remaining Goal(Tasks): %s, (g=%.1f, h=%.1f, f=%.1f)\n", 
-                   topTaskName.c_str(), neighborNode->gCost, neighborNode->hCost, neighborNode->fCost);
+            //printf("  [DECOMP] Pushing new node. Remaining Goal(Tasks): %s, (g=%.1f, h=%.1f, f=%.1f)\n", 
+            //       topTaskName.c_str(), neighborNode->gCost, neighborNode->hCost, neighborNode->fCost);
         };
 
         while (!openSet.empty())
@@ -385,7 +385,7 @@ namespace SAHGOAP
             std::shared_ptr<internal::PlannerNode> currentNode = openSet.top();
             openSet.pop();
 
-            if (currentNode->tasksRemaining.empty() || nodes_expanded > 50) {
+            if (currentNode->tasksRemaining.empty() /*|| nodes_expanded > 50*/) {
                 printf("---------------\n[PLANNER SUCCESS]\n");
                 printf("Total Nodes Generated: %d\n", nodes_generated);
                 printf("Total Nodes Expanded: %d\n", nodes_expanded);
@@ -403,16 +403,16 @@ namespace SAHGOAP
                 return finalPlan;
             }
 
-            printf("\n[POP] Popped Node #%d (f=%.1f, g=%.1f, h=%.1f). Tasks left: %zu. Top Task: %s\n", 
-                   nodes_expanded, currentNode->fCost, currentNode->gCost, currentNode->hCost, 
-                   currentNode->tasksRemaining.size(), currentNode->tasksRemaining.front()->GetName().c_str());
+            //printf("\n[POP] Popped Node #%d (f=%.1f, g=%.1f, h=%.1f). Tasks left: %zu. Top Task: %s\n", 
+            //       nodes_expanded, currentNode->fCost, currentNode->gCost, currentNode->hCost, 
+            //       currentNode->tasksRemaining.size(), currentNode->tasksRemaining.front()->GetName().c_str());
             
             size_t currentHash = currentNode->GetHash(worldModel);
             auto it = closedSet.find(currentHash);
             if (it != closedSet.end()) {
                 // If we've been to this state before, only proceed if the new path is cheaper.
                 if (currentNode->gCost >= it->second) {
-                    printf("  [SKIP] Node is already in closed set with a better or equal gCost (%.1f >= %.1f).\n", currentNode->gCost, it->second);
+                    //printf("  [SKIP] Node is already in closed set with a better or equal gCost (%.1f >= %.1f).\n", currentNode->gCost, it->second);
                     continue;
                 }
             }
@@ -468,7 +468,7 @@ namespace SAHGOAP
                 }
 
                 if (unsatisfiedConditions.empty()) {
-                    printf("  [SATISFIED] AchieveStateTask is already met.\n");
+                    //printf("  [SATISFIED] AchieveStateTask is already met.\n");
                     // Task is already complete. Create a "do nothing" node.
                     createDecompositionNode(currentNode, std::move(remainingTasks));
                     continue;
@@ -484,14 +484,14 @@ namespace SAHGOAP
                 }
                 
                 if (potentialActions.empty()) {
-                    printf("  [DEAD END] No action generator could satisfy goal.\n");
+                    //printf("  [DEAD END] No action generator could satisfy goal.\n");
                     continue; // Dead end.
                 }
                 // remove duplicate actions
                 std::sort(potentialActions.begin(), potentialActions.end());
                 potentialActions.erase(std::unique(potentialActions.begin(), potentialActions.end()), potentialActions.end());
                 
-                printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
+                //printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
                 // For each potential action, create a new branch where the next task is to EXECUTE that action.
                 while(!potentialActions.empty())
                 {
@@ -530,7 +530,7 @@ namespace SAHGOAP
                     // This is where the planner needs to be strategic.
                     
                     // BRANCH 1: The "Greedy" path. Solve only for the immediate action's needs.
-                    printf("  [DECOMP-GREEDY] Preconditions not met for '%s'. Decomposing to achieve them.\n", executeTask->action.name.c_str());
+                    //printf("  [DECOMP-GREEDY] Preconditions not met for '%s'. Decomposing to achieve them.\n", executeTask->action.name.c_str());
                     {
                         Goal decompTasks;
                         decompTasks.push_back(std::make_unique<AchieveStateTask>(executeTask->action.preconditions));    
@@ -540,9 +540,9 @@ namespace SAHGOAP
                         }
                         createDecompositionNode(currentNode, std::move(decompTasks));
                     }
-                    continue;
+
                     // BRANCH 2: The "Strategic" path. Look ahead and solve for the entire sequence.
-                    printf("  [DECOMP-STRATEGIC] Simulating future tasks to find all required preconditions...\n");
+                    //printf("  [DECOMP-STRATEGIC] Simulating future tasks to find all required preconditions...\n");
                     StateGoal allNeededPreconditions;
                     AgentState simulatedState = currentNode->currentState; // Start simulation from current state.
 
@@ -599,12 +599,12 @@ namespace SAHGOAP
                             futureUnmetPreconditions.push_back(cond);
                         }
                     }
-                    std::sort(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end());
-                    futureUnmetPreconditions.erase(std::unique(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end()), futureUnmetPreconditions.end());
+                    //std::sort(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end());
+                    //futureUnmetPreconditions.erase(std::unique(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end()), futureUnmetPreconditions.end());
 
                     // Only create a strategic branch if it offers a different (larger) goal than the greedy branch.
                     if (!futureUnmetPreconditions.empty()) {
-                        printf("  [DECOMP-STRATEGIC] Found %zu total unmet preconditions. Creating strategic branches.\n", futureUnmetPreconditions.size());
+                        //printf("  [DECOMP-STRATEGIC] Found %zu total unmet preconditions. Creating strategic branches.\n", futureUnmetPreconditions.size());
                         // Generate actions that can satisfy the unmet conditions.
                         std::vector<ActionInstance> potentialActions;
                         for (const auto& generator : worldModel.GetActionGenerators()) {
@@ -615,14 +615,14 @@ namespace SAHGOAP
                         }
                         
                         if (potentialActions.empty()) {
-                            printf("  [DEAD END] No action generator could satisfy goal.\n");
+                            //printf("  [DEAD END] No action generator could satisfy goal.\n");
                             continue; // Dead end.
                         }
                         // remove duplicate actions
                         std::sort(potentialActions.begin(), potentialActions.end());
                         potentialActions.erase(std::unique(potentialActions.begin(), potentialActions.end()), potentialActions.end());
                         
-                        printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
+                        //printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
                         // For each potential action, create a new branch where the next task is to EXECUTE that action.
                         while(!potentialActions.empty())
                         {
@@ -646,7 +646,7 @@ namespace SAHGOAP
                 {
                     // --- PRECONDITIONS ARE MET ---
                     // If we reach here, the current action IS executable. We only need to execute it.
-                    printf("  [EXECUTE] Preconditions met for '%s'. Applying effects.\n", executeTask->action.name.c_str());
+                    //printf("  [EXECUTE] Preconditions met for '%s'. Applying effects.\n", executeTask->action.name.c_str());
                     AgentState nextState = currentNode->currentState;
                     for (const auto& effect_schema : executeTask->action.effects) {
                         const auto* effect_info = worldModel.GetEffectInfo(effect_schema.name);
@@ -665,7 +665,7 @@ namespace SAHGOAP
                     neighborNode->CalculateFCost();
                     openSet.push(neighborNode);
                     nodes_generated++;
-                    printf("  [APPLY] Created new state node (f=%.1f)\n", neighborNode->fCost);
+                    //printf("  [APPLY] Created new state node (f=%.1f)\n", neighborNode->fCost);
                 }
             }
         
