@@ -527,21 +527,6 @@ namespace SAHGOAP
 
                 if (!currentActionPreconditionsMet) {
                     // --- PRECONDITIONS NOT MET ---
-                    // This is where the planner needs to be strategic.
-                    
-                    // BRANCH 1: The "Greedy" path. Solve only for the immediate action's needs.
-                    //printf("  [DECOMP-GREEDY] Preconditions not met for '%s'. Decomposing to achieve them.\n", executeTask->action.name.c_str());
-                    {
-                        Goal decompTasks;
-                        decompTasks.push_back(std::make_unique<AchieveStateTask>(executeTask->action.preconditions));    
-                        decompTasks.push_back(currentTask->Clone());
-                        for (auto& task : remainingTasks) {
-                            decompTasks.push_back(task->Clone());
-                        }
-                        createDecompositionNode(currentNode, std::move(decompTasks));
-                    }
-
-                    // BRANCH 2: The "Strategic" path. Look ahead and solve for the entire sequence.
                     //printf("  [DECOMP-STRATEGIC] Simulating future tasks to find all required preconditions...\n");
                     StateGoal allNeededPreconditions;
                     AgentState simulatedState = currentNode->currentState; // Start simulation from current state.
