@@ -26,16 +26,13 @@ namespace SAHGOAP
 
     int WorldModel::GetSymbolId(const std::string& symbol) const {
         auto it = symbol_to_id.find(symbol);
-        if (it != symbol_to_id.end()) {
-            return it->second;
-        }
-        // Consider throwing an error or returning a specific "not found" value
-        return -1;
+        return (it != symbol_to_id.end()) ? it->second : -1;
     }
 
     const std::string& WorldModel::GetSymbolName(int symbolId) const {
-        // In a real implementation, add bounds checking.
-        return id_to_symbol[symbolId];
+        if(symbolId >= 0 && symbolId < id_to_symbol.size()) return id_to_symbol[symbolId];
+        static std::string empty = "";
+        return empty;
     }
     
 
@@ -44,48 +41,62 @@ namespace SAHGOAP
         return registered_generators;   
     }
 
-    /*const std::vector<ActionSchema>& WorldModel::GetActionSchemas() const
-    {
-        return registered_schemas;
-    }*/
-
     void WorldModel::RegisterGoalApplier(const std::string& conditionName, GoalApplierFunction func) {
         registered_goal_appliers[conditionName] = std::move(func);
     }
 
-    /*void WorldModel::RegisterActionSchema(ActionSchema schema)
-    {
-        registered_schemas.push_back(std::move(schema));
-    }*/
-
     size_t WorldModel::HashState(const AgentState& state) const
     {
         size_t seed = 0;
-        // Iterate through the components of the given AgentState.
-        // std::map iteration is ordered, which is good for a consistent hash.
-        for (const auto& [type_idx, component_any] : state.components) {
-            // Find the registered hasher for this component's type.
-            auto hasher_it = registered_hashers.find(type_idx);
-            if (hasher_it != registered_hashers.end()) {
-                // A hasher was found, so call it.
-                const HasherFunction& hasher = hasher_it->second;
-                size_t component_hash = hasher(component_any);
+        std::vector<int> sorted_indices = state.active_indices;
+        std::sort(sorted_indices.begin(), sorted_indices.end());
+        // Note: To be perfectly safe against "floating point" errors in insertion order affecting hash 
+        // (e.g. A then B vs B then A producing different seeds), 
+        // you might want to sort active_indices. However, for a planner, 
+        // the state usually evolves from a parent, preserving relative order. 
+        // If you experience hash oscillation, Sort active_indices here.
 
-                // Combine the component's hash into the total seed (boost::hash_combine style).
+        for (int id : sorted_indices) {
+            if (id < registered_hashers.size() && registered_hashers[id]) {
+                const std::any& comp_data = state.components[id];
+                size_t component_hash = registered_hashers[id](comp_data);
                 seed ^= component_hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
             }
         }
         return seed;
     }
 
-    const WorldModel::ConditionInfo* WorldModel::GetConditionInfo(const std::string& name) const {
-        auto it = registered_conditions.find(name);
-        return (it != registered_conditions.end()) ? &it->second : nullptr;
+    int WorldModel::GetConditionID(const std::string& name) const {
+        auto it = condition_name_to_id.find(name);
+        return (it != condition_name_to_id.end()) ? it->second : -1;
     }
 
-    const WorldModel::EffectInfo* WorldModel::GetEffectInfo(const std::string& name) const {
-        auto it = registered_effects.find(name);
-        return (it != registered_effects.end()) ? &it->second : nullptr;
+    const std::string& WorldModel::GetConditionName(int id) const {
+        if (id >= 0 && id < conditions_by_id.size()) {
+            return conditions_by_id[id].name;
+        }
+        static const std::string empty = "";
+        return empty;
+    }
+ 
+
+    const WorldModel::ConditionInfo* WorldModel::GetConditionInfo(int id) const {
+        if (id >= 0 && id < conditions_by_id.size()) {
+            return &conditions_by_id[id];
+        }
+        return nullptr;
+    }
+
+    int WorldModel::GetEffectID(const std::string& name) const {
+        auto it = effect_name_to_id.find(name);
+        return (it != effect_name_to_id.end()) ? it->second : -1;
+    }    
+
+    const WorldModel::EffectInfo* WorldModel::GetEffectInfo(int id) const {
+        if (id >= 0 && id < effects_by_id.size()) {
+            return &effects_by_id[id];
+        }
+        return nullptr;
     }
     const GoalApplierFunction* WorldModel::GetGoalApplier(const std::string& name) const {
         auto it = registered_goal_appliers.find(name);
@@ -121,43 +132,73 @@ namespace SAHGOAP
         }
         return resolved_params;
     }
+
+    std::optional<std::vector<int>> ResolveParams(const internal::ResolvedAction& action, const std::vector<std::string>& param_strings, const WorldModel& model) {
+        std::vector<int> resolved_params;
+        resolved_params.reserve(param_strings.size());
+        for (const std::string& param_str : param_strings) {
+            if (param_str.empty()) continue;
+            if (param_str[0] == '$') {
+                std::string param_name = param_str.substr(1);
+                auto it = action.params.find(param_name);
+                if (it == action.params.end()) return std::nullopt;
+                resolved_params.push_back(it->second);
+            } else if (param_str[0] == '@') {
+                resolved_params.push_back(model.GetSymbolId(param_str.substr(1)));
+            } else {
+                try {
+                    resolved_params.push_back(std::stoi(param_str));
+                } catch (...) { return std::nullopt; }
+            }
+        }
+        return resolved_params;
+    }
+
+    // Helper for non-action contexts (like Goal checking) where there are no $Variable params
+    std::optional<std::vector<int>> ResolveParamsNoAction(const std::vector<std::string>& param_strings, const WorldModel& model) {
+        std::vector<int> resolved_params;
+        resolved_params.reserve(param_strings.size());
+        for (const std::string& param_str : param_strings) {
+            if (param_str.empty()) continue;
+            if (param_str[0] == '@') {
+                resolved_params.push_back(model.GetSymbolId(param_str.substr(1)));
+            } else if (param_str[0] == '$') {
+                return std::nullopt; // Cannot resolve variables without an action context
+            } else {
+                try {
+                    resolved_params.push_back(std::stoi(param_str));
+                } catch (...) { return std::nullopt; }
+            }
+        }
+        return resolved_params;
+    }
+
+    internal::ResolvedAction WorldModel::ResolveAction(const ActionInstance& inst) const {
+        internal::ResolvedAction resolved;
+        resolved.name = inst.name;
+        resolved.cost = inst.cost;
+        resolved.precondition_cost = inst.precondition_cost;
+        resolved.params = inst.params; // Copy the parameters
+
+        // 1. Convert Preconditions to Int IDs
+        for (const auto& cond : inst.preconditions) {
+            int id = GetConditionID(cond.name);
+            if (id != -1) {
+                resolved.preconditions.push_back({id, cond.params, cond.op});
+            }
+        }
+
+        // 2. Convert Effects to Int IDs
+        for (const auto& eff : inst.effects) {
+            int id = GetEffectID(eff.name);
+            if (id != -1) {
+                resolved.effects.push_back({id, eff.params});
+            }
+        }
+
+        return resolved;
+    }
     
-    /*std::optional<ResolvedAction> ResolveAction(const ActionInstance& inst, const WorldModel& model) {
-        ResolvedAction res;
-        res.schema = inst.schema;
-        res.cost = inst.schema->cost;
-
-        // Resolve Preconditions
-        for (const auto& cond_schema : inst.schema->preconditions) {
-            // 1. Get the info struct.
-            const auto* cond_info = model.GetConditionInfo(cond_schema.name);
-            if (!cond_info) return std::nullopt; // Condition name not registered.
-
-            // 2. Resolve the parameters for this instance.
-            auto params = ResolveParams(inst, cond_schema.params, model);
-            if (!params) return std::nullopt; // Parameter name was wrong.
-        
-            // 3. Create the ResolvedOperation and push it back.
-            // This is the corrected line. We are moving the function, params, and op into the struct.
-            res.resolved_preconditions.push_back({&cond_info->erased_func, std::move(*params), cond_schema.op});
-        }
-
-        for (const auto& effect_schema : inst.schema->effects) {
-            // 1. Get the EffectInfo, not ConditionInfo
-            const auto* effect_info = model.GetEffectInfo(effect_schema.name);
-            if (!effect_info) return std::nullopt;
-
-            // 2. Resolve parameters
-            auto params = ResolveParams(inst, effect_schema.params, model);
-            if (!params) return std::nullopt;
-
-            // 3. Create the ResolvedEffect and push to the correct vector
-            res.resolved_effects.push_back({&effect_info->erased_func, std::move(*params)});
-        }
-
-        return res;
-    }*/
-
     using StateGoal = std::vector<Condition>;
     
     class AchieveStateTask : public BaseTask {
@@ -196,33 +237,21 @@ namespace SAHGOAP
 
     };
 
-    class ExecuteActionTask : public BaseTask {
+    class ExecuteResolvedTask : public BaseTask {
     public:
-        ActionInstance action;
-        ExecuteActionTask(ActionInstance act) : action(std::move(act)) {}
-        bool Decompose(const AgentState&, Goal&) const override { return false; /* Handled by planner */ }
-        std::unique_ptr<BaseTask> Clone() const override { return std::make_unique<ExecuteActionTask>(action); }
-        std::string GetName() const override {
-            std::string debug_name = "Execute: " + action.name;
-            if (action.params.empty()) {
-                return debug_name;
-            }
+        internal::ResolvedAction action; 
 
-            debug_name += "(";
-            bool first = true;
-            for (const auto& [key, value] : action.params) {
-                if (!first) {
-                    debug_name += ", ";
-                }
-                // Note: We can't know the symbol name for 'value' here, and that's okay.
-                // Printing the key and the raw ID is still very informative.
-                debug_name += key + "=" + std::to_string(value);
-                first = false;
-            }
-            debug_name += ")";
-            return debug_name;
+        ExecuteResolvedTask(internal::ResolvedAction act) : action(std::move(act)) {}
+
+        bool Decompose(const AgentState&, Goal&) const override { return false; }
+        
+        std::unique_ptr<BaseTask> Clone() const override { 
+            return std::make_unique<ExecuteResolvedTask>(action); 
         }
         
+        std::string GetName() const override {
+            return "Execute: " + action.name;
+        }
     };
 
     namespace internal
@@ -232,20 +261,15 @@ namespace SAHGOAP
         // =============================================================================
 
         void PlannerNode::CalculateFCost() { fCost = gCost + hCost; }
-            // A more robust hash is needed for production.
+
         size_t PlannerNode::GetHash(const WorldModel& model) const {
             if (this->hash != 0) return this->hash;
             
             size_t stateHash = model.HashState(currentState);
-            
             size_t goalHash = model.HashGoal(tasksRemaining);
 
-            //size_t parentHash = 0;
-            //if (this->parent && this->parent->hash != 0) parentHash = this->parent->hash;
-            
             size_t combinedHash = stateHash;
             combinedHash ^= goalHash + 0x9e3779b9 + (combinedHash << 6) + (combinedHash >> 2);
-            //combinedHash ^= parentHash + 0x9e3779b9 + (combinedHash << 6) + (combinedHash >> 2);
 
             this->hash = combinedHash;
             return combinedHash;
@@ -276,7 +300,7 @@ namespace SAHGOAP
                     task_hash ^= SAHGOAP::internal::HashCondition(cond);
                 }
             } 
-            else if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(task_ptr.get())) {
+            else if (const auto* executeTask = dynamic_cast<const ExecuteResolvedTask*>(task_ptr.get())) {
                 // For an ExecuteActionTask, hash the action's name and parameters.
                 task_hash = std::hash<std::string>()(executeTask->action.name);
                 for (const auto& [key, value] : executeTask->action.params) {
@@ -309,26 +333,37 @@ namespace SAHGOAP
         int nodes_expanded = 0;
         printf("\n[PLANNER START]\n---------------\n");
 
-        heuristic = [&](const AgentState& state, const Goal& goal) -> float {
+        std::vector<internal::ResolvedCondition> internalGoalConditions;
+        for(const auto& cond : initialConditions) {
+            int id = worldModel.GetConditionID(cond.name);
+            if(id != -1) {
+                internalGoalConditions.push_back({ id, cond.params, cond.op });
+            }
+        }
+
+        auto internalHeuristic = [&](const AgentState& state, const Goal& goal) -> float {
             float total_estimated_cost = 0.0f;
             for (const auto& task_ptr : goal) {
-                if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(task_ptr.get())) {
+                if (const auto* executeTask = dynamic_cast<const ExecuteResolvedTask*>(task_ptr.get())) {
                     const auto& action = executeTask->action;
                     bool preconditionsMet = true;
+                    
+                    // FAST LOOP: iterating vector<ResolvedCondition>, no string lookups
                     for (const auto& condition : action.preconditions) {
+                        // O(1) Lookup
+                        const auto* cond_info = worldModel.GetConditionInfo(condition.conditionId);
+                        
+                        // Note: ResolveParams still does some string parsing, but map lookup is removed
                         auto params = ResolveParams(action, condition.params, worldModel);
-                        const auto* cond_info = worldModel.GetConditionInfo(condition.name);
+                        
                         if (!cond_info || !params || !(cond_info->erased_func)(state, *params, condition.op)) {
                             preconditionsMet = false;
                             break;
                         }
                     }
 
-                    if (preconditionsMet) {
-                        total_estimated_cost += action.cost;
-                    } else {
-                        total_estimated_cost += action.cost + action.precondition_cost;
-                    }
+                    if (preconditionsMet) total_estimated_cost += action.cost;
+                    else total_estimated_cost += action.cost + action.precondition_cost;
                 } else {
                     total_estimated_cost += 1.0f; 
                 }
@@ -385,7 +420,7 @@ namespace SAHGOAP
             std::shared_ptr<internal::PlannerNode> currentNode = openSet.top();
             openSet.pop();
 
-            if (currentNode->tasksRemaining.empty() /*|| nodes_expanded > 50*/) {
+            if (currentNode->tasksRemaining.empty()) {
                 printf("---------------\n[PLANNER SUCCESS]\n");
                 printf("Total Nodes Generated: %d\n", nodes_generated);
                 printf("Total Nodes Expanded: %d\n", nodes_expanded);
@@ -395,7 +430,13 @@ namespace SAHGOAP
                 std::shared_ptr<internal::PlannerNode> pathNode = currentNode;
                 while (pathNode != nullptr && pathNode->parent != nullptr) {
                     if (pathNode->parentActionInstance) {
-                        finalPlan.push_back(*pathNode->parentActionInstance);
+                         // Reconstruct ActionInstance from ResolvedAction
+                        // We do not reconstruct the string lists for preconditions/effects as they aren't needed for execution.
+                        ActionInstance inst;
+                        inst.name = pathNode->parentActionInstance->name;
+                        inst.cost = pathNode->parentActionInstance->cost;
+                        inst.params = pathNode->parentActionInstance->params;
+                        finalPlan.push_back(inst);
                     }
                     pathNode = pathNode->parent;
                 }
@@ -442,12 +483,21 @@ namespace SAHGOAP
                 // 2. Look ahead to the next ExecuteActionTask and add its preconditions to our list.
                 // This allows the planner to make opportunistic, efficient choices.
                 for (const auto& nextTask : remainingTasks) {
-                    if (const auto* executeTask = dynamic_cast<const ExecuteActionTask*>(nextTask.get())) {
-                        conditionsToConsider.insert(conditionsToConsider.end(),
-                                                    executeTask->action.preconditions.begin(),
-                                                    executeTask->action.preconditions.end());
-                        // We only look ahead to the very next primitive action.
-                        //break; 
+                    if (const auto* executeTask = dynamic_cast<const ExecuteResolvedTask*>(nextTask.get())) {
+                        // Manually convert ResolvedCondition back to Condition
+                        for(const auto& rc : executeTask->action.preconditions) {
+                            Condition c;
+                            c.name = worldModel.GetConditionName(rc.conditionId);
+                            c.params = rc.params;
+                            c.op = rc.op;
+                            conditionsToConsider.push_back(std::move(c));
+                        }
+                        
+                        // conditionsToConsider.insert(conditionsToConsider.end(),
+                        //                             executeTask->action.preconditions.begin(),
+                        //                             executeTask->action.preconditions.end());
+
+
                     }
                     else {
                         // Stop looking ahead if we hit a non-primitive task (e.g., another AchieveStateTask)
@@ -459,8 +509,9 @@ namespace SAHGOAP
                 
                 StateGoal unsatisfiedConditions;
                 for (const auto& condition : conditionsToConsider) {
-                    auto params = ResolveParams(std::nullopt, condition.params, worldModel);
-                    const auto* cond_info = worldModel.GetConditionInfo(condition.name);
+                    auto params = ResolveParamsNoAction(condition.params, worldModel);
+                    int conditionIndex = worldModel.GetConditionID(condition.name);
+                    const auto* cond_info = worldModel.GetConditionInfo(conditionIndex);
 
                     if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, condition.op)) {
                         unsatisfiedConditions.push_back(condition);
@@ -490,16 +541,22 @@ namespace SAHGOAP
                 // remove duplicate actions
                 std::sort(potentialActions.begin(), potentialActions.end());
                 potentialActions.erase(std::unique(potentialActions.begin(), potentialActions.end()), potentialActions.end());
+
+                std::vector<internal::ResolvedAction> resolvedActions;
+                resolvedActions.reserve(potentialActions.size());
+                for(const auto& raw : potentialActions) {
+                    resolvedActions.push_back(worldModel.ResolveAction(raw));
+                }
                 
                 //printf("  [EXPAND] Found %zu potential actions to satisfy goal.\n", potentialActions.size());
                 // For each potential action, create a new branch where the next task is to EXECUTE that action.
-                while(!potentialActions.empty())
+                while(!resolvedActions.empty())
                 {
-                    auto action = std::move(potentialActions.back());
-                    potentialActions.pop_back();
+                    auto action = std::move(resolvedActions.back());
+                    resolvedActions.pop_back();
 
                     Goal decompTasks;
-                    decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(action)));
+                    decompTasks.push_back(std::make_unique<ExecuteResolvedTask>(std::move(action)));
                     // Re-evaluate the original goal after the action is done.
                     decompTasks.push_back(currentTask->Clone());
                     // Add the rest of the original plan tasks.
@@ -513,13 +570,14 @@ namespace SAHGOAP
             // --- Case 2: ExecuteActionTask ---
             // This branch handles tasks that are NOT AchieveStateTask.
             // It can decompose into a list of sub-tasks.
-            else if (auto* executeTask = dynamic_cast<ExecuteActionTask*>(currentTask.get()))
+            else if (auto* executeTask = dynamic_cast<ExecuteResolvedTask*>(currentTask.get()))
             {
                 bool currentActionPreconditionsMet = true;
-                for (const auto& cond_schema : executeTask->action.preconditions) {
-                    const auto* cond_info = worldModel.GetConditionInfo(cond_schema.name);
-                    auto params = ResolveParams(executeTask->action, cond_schema.params, worldModel);
-                    if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, cond_schema.op)) {
+                for (const auto& rCond : executeTask->action.preconditions) {
+                    const auto* cond_info = worldModel.GetConditionInfo(rCond.conditionId);
+                    auto params = ResolveParams(executeTask->action, rCond.params, worldModel);
+                    
+                    if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, rCond.op)) {
                         currentActionPreconditionsMet = false;
                         break;
                     }
@@ -540,30 +598,35 @@ namespace SAHGOAP
 
                     // --- NEW SIMULATION LOOP ---
                     for (const auto* taskToSim : tasksToSimulate) {
-                        if (const auto* nextExecuteTask = dynamic_cast<const ExecuteActionTask*>(taskToSim)) {
+                        if (const auto* nextExecuteTask = dynamic_cast<const ExecuteResolvedTask*>(taskToSim)) {
                             // Step 1: Check preconditions against the CURRENT simulated state.
                             // If a precondition isn't met in our simulation, we need to solve for it.
                             for (const auto& cond : nextExecuteTask->action.preconditions) {
                                 auto params = ResolveParams(nextExecuteTask->action, cond.params, worldModel);
-                                const auto* cond_info = worldModel.GetConditionInfo(cond.name);
+                                const auto* cond_info = worldModel.GetConditionInfo(cond.conditionId);
                                 if (!cond_info || !params || !(cond_info->erased_func)(simulatedState, *params, cond.op)) {
-                                    allNeededPreconditions.push_back(cond);
+                                    Condition userFacingCond;
+                                    userFacingCond.name = worldModel.GetConditionName(cond.conditionId);
+                                    userFacingCond.params = cond.params; // These are still strings, so simple copy
+                                    userFacingCond.op = cond.op;
+                                    
+                                    allNeededPreconditions.push_back(std::move(userFacingCond));
                                 }
                             }
 
                             // Step 2: Apply effects to the simulated state for the NEXT iteration.
                             for (const auto& effect : nextExecuteTask->action.effects) {
-                                if (const auto* effect_info = worldModel.GetEffectInfo(effect.name)) {
-                                    auto params = ResolveParams(nextExecuteTask->action, effect.params, worldModel);
-                                    if (params) (effect_info->erased_func)(simulatedState, *params);
-                                }
+                                const auto* effectInfo = worldModel.GetEffectInfo(effect.effectId);
+                                auto params = ResolveParams(nextExecuteTask->action, effect.params, worldModel);
+                                if(effectInfo && params) (effectInfo->erased_func)(simulatedState, *params);
                             }
                         } else if (const auto* nextAchieveTask = dynamic_cast<const AchieveStateTask*>(taskToSim)) {
                             // We've hit a high-level goal. Check which parts of it are not already satisfied
                             // by our simulated sequence of actions.
                             for (const auto& cond : nextAchieveTask->targetConditions) {
-                                auto params = ResolveParams(std::nullopt, cond.params, worldModel);
-                                const auto* cond_info = worldModel.GetConditionInfo(cond.name);
+                                auto params = ResolveParamsNoAction(cond.params, worldModel);
+                                int conditionIndex = worldModel.GetConditionID(cond.name);
+                                const auto* cond_info = worldModel.GetConditionInfo(conditionIndex);
                                 if (!cond_info || !params || !(cond_info->erased_func)(simulatedState, *params, cond.op)) {
                                     allNeededPreconditions.push_back(cond);
                                 }
@@ -578,14 +641,13 @@ namespace SAHGOAP
                     // Now, filter the massive list of preconditions to only those that are ACTUALLY unmet in the REAL current state.
                     StateGoal futureUnmetPreconditions;
                      for(const auto& cond : allNeededPreconditions) {
-                        auto params = ResolveParams(std::nullopt, cond.params, worldModel);
-                        const auto* cond_info = worldModel.GetConditionInfo(cond.name);
+                        auto params = ResolveParamsNoAction(cond.params, worldModel);
+                        int conditionIndex = worldModel.GetConditionID(cond.name);
+                        const auto* cond_info = worldModel.GetConditionInfo(conditionIndex);
                         if (!cond_info || !params || !(cond_info->erased_func)(currentNode->currentState, *params, cond.op)) {
                             futureUnmetPreconditions.push_back(cond);
                         }
                     }
-                    //std::sort(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end());
-                    //futureUnmetPreconditions.erase(std::unique(futureUnmetPreconditions.begin(), futureUnmetPreconditions.end()), futureUnmetPreconditions.end());
 
                     // Only create a strategic branch if it offers a different (larger) goal than the greedy branch.
                     if (!futureUnmetPreconditions.empty()) {
@@ -611,11 +673,14 @@ namespace SAHGOAP
                         // For each potential action, create a new branch where the next task is to EXECUTE that action.
                         while(!potentialActions.empty())
                         {
-                            auto action = std::move(potentialActions.back());
+                            auto rawAction = std::move(potentialActions.back());
                             potentialActions.pop_back();
 
+                            // Resolve the raw action into the optimized format expected by the Task
+                            internal::ResolvedAction resolvedAction = worldModel.ResolveAction(rawAction);
+
                             Goal decompTasks;
-                            decompTasks.push_back(std::make_unique<ExecuteActionTask>(std::move(action)));
+                            decompTasks.push_back(std::make_unique<ExecuteResolvedTask>(std::move(resolvedAction)));
                             // Re-evaluate the original goal after the action is done.
                             decompTasks.push_back(currentTask->Clone());
                             // Add the rest of the original plan tasks.
@@ -633,9 +698,9 @@ namespace SAHGOAP
                     // If we reach here, the current action IS executable. We only need to execute it.
                     //printf("  [EXECUTE] Preconditions met for '%s'. Applying effects.\n", executeTask->action.name.c_str());
                     AgentState nextState = currentNode->currentState;
-                    for (const auto& effect_schema : executeTask->action.effects) {
-                        const auto* effect_info = worldModel.GetEffectInfo(effect_schema.name);
-                        auto params = ResolveParams(executeTask->action, effect_schema.params, worldModel);
+                    for (const auto& rEff : executeTask->action.effects) {
+                        const auto* effect_info = worldModel.GetEffectInfo(rEff.effectId);
+                        auto params = ResolveParams(executeTask->action, rEff.params, worldModel);
                         if (effect_info && params) {
                             (effect_info->erased_func)(nextState, *params);
                         }
@@ -644,7 +709,7 @@ namespace SAHGOAP
                     neighborNode->currentState = std::move(nextState);
                     neighborNode->tasksRemaining = std::move(remainingTasks);
                     neighborNode->parent = currentNode;
-                    neighborNode->parentActionInstance = std::make_shared<ActionInstance>(executeTask->action);
+                    neighborNode->parentActionInstance = std::make_shared<internal::ResolvedAction>(executeTask->action);
                     neighborNode->gCost = currentNode->gCost + executeTask->action.cost;
                     neighborNode->hCost = heuristic(neighborNode->currentState, neighborNode->tasksRemaining);
                     neighborNode->CalculateFCost();

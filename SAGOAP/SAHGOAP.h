@@ -16,34 +16,105 @@ namespace SAHGOAP
 	// =============================================================================
 	using StateProperty = std::any;
 
+	enum class ComparisonOperator
+	{
+		EqualTo, NotEqualTo, GraterThan, GreaterThanOrEqualTo, LessThan, LessThanOrEqualTo
+	};
+
+	namespace internal
+    {
+        // ID Generator
+        // This effectively assigns a unique integer to every Type at runtime/link time.
+        struct ComponentFamily {
+            static inline int counter = 0;
+        };
+
+        template<typename T>
+        struct ComponentTypeID {
+            static inline int Get() {
+                static int id = ComponentFamily::counter++;
+                return id;
+            }
+        };
+
+		struct ResolvedCondition {
+			int conditionId; 
+			std::vector<std::string> params; 
+			ComparisonOperator op;
+		};
+
+		struct ResolvedEffect {
+			int effectId;
+			std::vector<std::string> params;
+		};
+
+		struct ResolvedAction {
+			std::string name; // For debug
+			int cost;
+			int precondition_cost;
+			
+			std::map<std::string, int> params; 
+			
+			std::vector<ResolvedCondition> preconditions; 
+			std::vector<ResolvedEffect> effects;
+			
+			bool operator<(const ResolvedAction& other) const {
+				if (cost != other.cost) return cost < other.cost;
+				return name < other.name; 
+			}
+		};
+
+	}
+
 	/**
 	 * @class AgentState
 	 * @brief A generic container for an agent's world state, composed of multiple Component structs.
 	 * The planner simulates changes to this object to find a valid plan.
 	 */
 	class AgentState
-	{
-	public:
-		std::map<std::type_index, std::any> components;
-		/** @brief Gets a mutable pointer to a component of type T. Adds a default-constructed component if not present. */
-		template<typename T>
-		T* AddComponent();
+    {
+    public:
+        // Direct O(1) access by ID.
+        std::vector<std::any> components; 
+        
+        // Keep track of which indices actually have data.
+        // This makes hashing and iterating O(NumActiveComponents) instead of O(TotalComponentTypes).
+        std::vector<int> active_indices; 
 
-		/** @brief Gets a const pointer to a component of type T. Returns nullptr if not present. */
-		template<typename T>
-		const T* GetComponent() const;
+        template<typename T>
+        T* AddComponent() {
+            int id = SAHGOAP::internal::ComponentTypeID<T>::Get();
 
-	private:
-		
-	};
+            // Resize vector if this is a new, higher ID
+            if (id >= components.size()) {
+                components.resize(id + 1);
+            }
+
+            // If empty, initialize and mark active
+            if (!components[id].has_value()) {
+                components[id] = T{};
+                active_indices.push_back(id);
+            }
+
+            // Return pointer
+            return std::any_cast<T>(&components[id]);
+        }
+
+        template<typename T>
+        const T* GetComponent() const {
+            int id = internal::ComponentTypeID<T>::Get();
+            
+            if (id < components.size() && components[id].has_value()) {
+                // std::any_cast on a pointer avoids exceptions and is fast
+                return std::any_cast<T>(&components[id]);
+            }
+            return nullptr;
+        }
+    };
 
 	using PlannerState = std::vector<int>;
 
-	enum class ComparisonOperator
-	{
-		EqualTo, NotEqualTo, GraterThan, GreaterThanOrEqualTo, LessThan, LessThanOrEqualTo
-	};
-
+	
 	/** @brief A data-only definition for a single precondition check. */
 	struct Condition
 	{
@@ -175,12 +246,16 @@ namespace SAHGOAP
 	{
 	private:
 		// Define internal structs first
+		
+
+	public:
 		struct ConditionInfo {
+			std::string name;
 			ConditionFunction erased_func;
 			std::type_index component_type;
 			
-			ConditionInfo(ConditionFunction func, std::type_index type)
-				: erased_func(std::move(func)), component_type(type) {}
+			ConditionInfo(std::string n, ConditionFunction func, std::type_index type)
+        	: name(std::move(n)), erased_func(std::move(func)), component_type(type) {}
 		};
 
 		struct EffectInfo {
@@ -191,10 +266,10 @@ namespace SAHGOAP
 				: erased_func(std::move(func)), component_type(type) {}
 		};
 
-	public:
 		void RegisterActionGenerator(ActionInstanceGenerator func);
 		void RegisterGoalApplier(const std::string& conditionName, GoalApplierFunction func);
 		//void RegisterActionSchema(ActionSchema schema);
+		const std::string& GetConditionName(int id) const;
 		
 		template<typename ComponentType>
 		void RegisterCondition(const std::string& name, 
@@ -206,11 +281,9 @@ namespace SAHGOAP
 					}
 					return false;
 			};
-			
-			registered_conditions.emplace(
-				name, 
-				ConditionInfo{std::move(erased_func), std::type_index(typeid(ComponentType))}
-			);
+			int new_id = conditions_by_id.size();
+        	condition_name_to_id[name] = new_id;
+        	conditions_by_id.push_back({name, std::move(erased_func), std::type_index(typeid(ComponentType))});
 		}
 
 		template<typename ComponentType>
@@ -223,10 +296,9 @@ namespace SAHGOAP
 				}
 			};
     
-			registered_effects.emplace(
-				name,
-				EffectInfo{std::move(erased_func), std::type_index(typeid(ComponentType))}
-			);
+			int new_id = effects_by_id.size();
+			effect_name_to_id[name] = new_id;
+			effects_by_id.push_back({std::move(erased_func), std::type_index(typeid(ComponentType))});
 		}
 
 		template<typename ComponentType>
@@ -237,8 +309,10 @@ namespace SAHGOAP
 		const std::string& GetSymbolName(int symbolId) const;
 
 		// Internal accessors
-		const ConditionInfo* GetConditionInfo(const std::string& name) const;
-		const EffectInfo* GetEffectInfo(const std::string& name) const;
+		int GetConditionID(const std::string& name) const;
+		const ConditionInfo* GetConditionInfo(int id) const;
+		int GetEffectID(const std::string& name) const;
+		const EffectInfo* GetEffectInfo(int id) const;
 		//const std::vector<ActionSchema>& GetActionSchemas() const;
 		const GoalApplierFunction* GetGoalApplier(const std::string& name) const;
 		const std::vector<ActionInstanceGenerator> GetActionGenerators() const;
@@ -247,13 +321,17 @@ namespace SAHGOAP
 
 		size_t HashGoal(const Goal& goal) const;
 
+		internal::ResolvedAction ResolveAction(const ActionInstance& inst) const;
+
 	private:
 		using HasherFunction = std::function<size_t(const std::any&)>;
 		
-		std::map<std::string, ConditionInfo> registered_conditions;
-		std::map<std::string, EffectInfo> registered_effects;
+		std::unordered_map<std::string, int> condition_name_to_id;
+    	std::unordered_map<std::string, int> effect_name_to_id;
+		std::vector<ConditionInfo> conditions_by_id;
+    	std::vector<EffectInfo> effects_by_id;
 		//std::vector<ActionSchema> registered_schemas;
-		std::map<std::type_index, HasherFunction> registered_hashers;
+		std::vector<HasherFunction> registered_hashers;
 		std::map<std::string, GoalApplierFunction> registered_goal_appliers;
 		std::vector<ActionInstanceGenerator> registered_generators;
 		std::map<std::string, int> symbol_to_id;
@@ -267,15 +345,11 @@ namespace SAHGOAP
 
 	namespace internal
     {
-        // =============================================================================
-        // Planner Internals (Implementation Detail)
-        // =============================================================================
-
         struct PlannerNode
         {
 	        AgentState currentState;
         	Goal tasksRemaining;
-        	std::shared_ptr<ActionInstance> parentActionInstance;
+        	std::shared_ptr<ResolvedAction> parentActionInstance;
 
         	float gCost = 0.0f;
         	float hCost = 0.0f;
@@ -298,30 +372,11 @@ namespace SAHGOAP
 
         size_t HashCondition(const Condition& cond);
 
-        
-
     } // namespace internal
 	
-	std::optional<std::vector<int>> ResolveParams(const std::optional<ActionInstance>& inst, const std::vector<std::string>& param_strings, const WorldModel& model);
-	class ExecuteActionTask;
-	/*struct ResolvedAction
-	{
-		struct ResolvedCondition {
-			// It holds the type-erased function directly, not the whole info struct.
-			const ConditionFunction* func; 
-			std::vector<int> params;
-			ComparisonOperator op;
-		};
-		struct ResolvedEffect {
-			const EffectFunction* func; 
-			std::vector<int> params;
-		};
+	std::optional<std::vector<int>> ResolveParams(const internal::ResolvedAction& action, const std::vector<std::string>& param_strings, const WorldModel& model);
+	class ExecuteResolvedTask;
 
-		const ActionSchema* schema;
-		float cost;
-		std::vector<ResolvedCondition> resolved_preconditions;
-		std::vector<ResolvedEffect> resolved_effects;
-	};*/
 	using NodeCollector = std::function<void(const std::shared_ptr<internal::PlannerNode>&)>;
 	class Planner
 	{

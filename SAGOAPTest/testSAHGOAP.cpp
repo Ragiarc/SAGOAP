@@ -511,7 +511,7 @@ TEST_F(SAHGOAP_Test, Planner_CraftsSword) {
     EXPECT_EQ(plan[5].name, "Craft(IronIngot)");
     EXPECT_EQ(plan[5].params.at("recipeId"), item_ingot);
 
-    EXPECT_EQ(plan[6].name, "Craft(IronIngot)");
+    EXPECT_EQ(plan[6].name, "Craft(Sword)");
     EXPECT_EQ(plan[6].params.at("recipeId"), item_sword);
 }
 
